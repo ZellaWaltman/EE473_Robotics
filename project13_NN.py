@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
+
 import cv2
 import numpy as np
 import depthai as dai
 import blobconverter
 import time
 from collections import Counter
+from ultralytics import YOLO
 
 # Define Frame Size: 416x416
 FRAME_SIZE = (416, 416)
@@ -43,15 +45,24 @@ def create_yolo_node(
     conf_thr: float = 0.45,
     iou_thr: float = 0.45
 ):
-    yolo = pipeline.create(dai.node.YoloDetectionNetwork)
+    yolo = pipeline.create(dai.node.YoloSpatialDetectionNetwork)
 
     blob_path = blobconverter.from_zoo(
         name=model_name,
-        shaves=6,
+        shaves=3,
         zoo_type=zoo_type
     )
 
     yolo.setBlobPath(blob_path)
+
+    # Spatial detection specific parameters
+    yolo.setConfidenceThreshold(0.5)
+    yolo.input.setBlocking(False)
+    yolo.setBoundingBoxScaleFactor(0.5)
+    yolo.setDepthLowerThreshold(100) # Min 10 centimeters
+    yolo.setDepthUpperThreshold(5000) # Max 5 meters
+    
+    # Yolo specific parameters
     yolo.setConfidenceThreshold(conf_thr)
     yolo.setIouThreshold(iou_thr)
     yolo.setNumClasses(80)
@@ -62,14 +73,18 @@ def create_yolo_node(
         30, 61, 62, 45, 59, 119,
         116, 90, 156, 198, 373, 326
     ])
+
+    # 416x416 blob produces three output grids:
+    #	- 52x52
+    #   - 26x26
+    #   - 13x13
     yolo.setAnchorMasks({
-        "side26": [0, 1, 2],
-        "side13": [3, 4, 5],
-        "side7": [6, 7, 8],
+        "side52": [0, 1, 2],
+        "side26": [3, 4, 5],
+        "side13": [6, 7, 8],
     })
 
     yolo.setNumInferenceThreads(2)
-    yolo.input.setBlocking(False)
     yolo.input.setQueueSize(1)
 
     return yolo
@@ -84,17 +99,17 @@ def create_pipeline():
     # RGB camera
     cam_rgb = pipeline.createColorCamera()
     cam_rgb.setPreviewSize(FRAME_SIZE[0], FRAME_SIZE[1])
-    cam_rgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
+    cam_rgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_720_P)
     cam_rgb.setBoardSocket(dai.CameraBoardSocket.CAM_A)
     cam_rgb.setInterleaved(False)
     cam_rgb.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
 
     # Mono cameras
     mono_left = pipeline.createMonoCamera()
-    mono_left.setResolution(dai.MonoCameraProperties.SensorResolution.THE_1080_P)
+    mono_left.setResolution(dai.MonoCameraProperties.SensorResolution.THE_720_P)
 
     mono_right = pipeline.createMonoCamera()
-    mono_right.setResolution(dai.MonoCameraProperties.SensorResolution.THE_1080_P)
+    mono_right.setResolution(dai.MonoCameraProperties.SensorResolution.THE_720_P)
 
     mono_left.setBoardSocket(dai.CameraBoardSocket.CAM_B)
     mono_right.setBoardSocket(dai.CameraBoardSocket.CAM_C)
@@ -113,7 +128,8 @@ def create_pipeline():
     # YOLO Node
     yolo = create_yolo_node(pipeline)
     cam_rgb.preview.link(yolo.input)
-
+    stereo.depth.link(yolo.inputDepth)
+    
     # Output Streams
     xout_rgb = pipeline.create(dai.node.XLinkOut)
     xout_rgb.setStreamName("rgb")
@@ -211,18 +227,16 @@ with dai.Device(pipeline) as device:
             cx_depth = int(cx_rgb * w_depth / w_rgb)
             cy_depth = int(cy_rgb * h_depth / h_rgb)
 
-            distance_mm = measure_distance(depthFrame, cx_depth, cy_depth)
+            # each `det` is a SpatialDetection
+            X = det.spatialCoordinates.x  # mm
+            Y = det.spatialCoordinates.y  # mm
+            Z = det.spatialCoordinates.z  # mm (distance forward)
 
-            crosshair_size = 5
-            cv2.line(frame, (cx_rgb - crosshair_size, cy_rgb),
-                     (cx_rgb + crosshair_size, cy_rgb), (0, 255, 255), 1)
-            cv2.line(frame, (cx_rgb, cy_rgb - crosshair_size),
-                     (cx_rgb, cy_rgb + crosshair_size), (0, 255, 255), 1)
-
-            if distance_mm is None:
-                dist_str = "dist: N/A"
+            dist_m = Z / 1000.0 if Z != 0 else None
+            if dist_m is None:
+            	dist_str = "dist: N/A"
             else:
-                dist_str = f"dist: {distance_mm/10:.0f} cm" if distance_mm < 1000 else f"dist: {distance_mm/1000:.2f} m"
+            	dist_str = f"dist: {dist_m:.2f} m"
 
             text = f"{label} {det.confidence*100:.1f}% {dist_str}"
 
