@@ -1,0 +1,7 @@
+tag_positions:
+  0: [0.30, -0.20, 0.00]   # Tag 0: 30 cm forward, 20 cm right
+  1: [0.30,  0.20, 0.00]   # Tag 1: 30 cm forward, 20 cm left
+  2: [0.098, -0.20, 0.00]  # Tag 2: 9.8 cm forward, 20 cm right
+  3: [0.098,  0.20, 0.00]  # Tag 3: 9.8 cm forward, 20 cm left
+
+tag_size_m: 0.038 # Size (m). Tag Dimensions: 38mmx38mm
