@@ -45,7 +45,7 @@ def create_yolo_node(
     conf_thr: float = 0.45,
     iou_thr: float = 0.45
 ):
-    yolo = pipeline.create(dai.node.YoloSpatialDetectionNetwork)
+    yolo = pipeline.create(dai.node.YoloDetectionNetwork)
 
     blob_path = blobconverter.from_zoo(
         name=model_name,
@@ -54,13 +54,6 @@ def create_yolo_node(
     )
 
     yolo.setBlobPath(blob_path)
-
-    # Spatial detection specific parameters
-    yolo.setConfidenceThreshold(0.5)
-    yolo.input.setBlocking(False)
-    yolo.setBoundingBoxScaleFactor(0.5)
-    yolo.setDepthLowerThreshold(100) # Min 10 centimeters
-    yolo.setDepthUpperThreshold(5000) # Max 5 meters
     
     # Yolo specific parameters
     yolo.setConfidenceThreshold(conf_thr)
@@ -86,6 +79,7 @@ def create_yolo_node(
     })
 
     yolo.setNumInferenceThreads(2)
+    yolo.input.setBlocking(False)
     yolo.input.setQueueSize(1)
 
     return yolo
@@ -129,7 +123,6 @@ def create_pipeline():
     # YOLO Node
     yolo = create_yolo_node(pipeline)
     cam_rgb.preview.link(yolo.input)
-    stereo.depth.link(yolo.inputDepth)
     
     # Output Streams
     xout_rgb = pipeline.create(dai.node.XLinkOut)
