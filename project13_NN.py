@@ -99,7 +99,7 @@ def create_pipeline():
     # RGB camera
     cam_rgb = pipeline.createColorCamera()
     cam_rgb.setPreviewSize(FRAME_SIZE[0], FRAME_SIZE[1])
-    cam_rgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_720_P)
+    cam_rgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
     cam_rgb.setBoardSocket(dai.CameraBoardSocket.CAM_A)
     cam_rgb.setInterleaved(False)
     cam_rgb.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
@@ -120,7 +120,7 @@ def create_pipeline():
     stereo.setSubpixel(True)
     stereo.setLeftRightCheck(True)
     stereo.setExtendedDisparity(False)
-    stereo.setDepthAlign(dai.CameraBoardSocket.RGB)
+    stereo.setDepthAlign(dai.CameraBoardSocket.CAM_A)
 
     mono_left.out.link(stereo.left)
     mono_right.out.link(stereo.right)
@@ -249,10 +249,6 @@ with dai.Device(pipeline) as device:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
         cv2.imshow("OAK-D YOLOv5n + Depth", frame)
-
-        depth_vis = cv2.normalize(depthFrame, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-        depth_vis = cv2.applyColorMap(depth_vis, cv2.COLORMAP_JET)
-        cv2.imshow("Depth", depth_vis)
 
         if now - last_report_time > 5.0:
             avg_fps = frame_count / (now - start_time)
