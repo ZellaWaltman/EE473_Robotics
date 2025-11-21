@@ -17,7 +17,7 @@ CY = 208.0
 # Tag size in METERS
 TAG_SIZE_M = 0.038
 
-# Optional: only highlight these tag IDs (but we’ll still show all)
+# Highlight these tag IDs (but we still show all)
 INTEREST_TAG_IDS = {0, 1, 2, 3}
 
 # -------------------------------------------------------
@@ -44,11 +44,6 @@ def create_pipeline():
 # Convert rotation matrix to roll/pitch/yaw (optional)
 # -------------------------------------------------------
 def rot_to_euler_rpy(R):
-    """
-    R: 3x3 rotation matrix (camera->tag or tag->camera)
-    Returns roll, pitch, yaw in radians.
-    Convention: XYZ (roll around x, pitch around y, yaw around z)
-    """
     sy = np.sqrt(R[0, 0] ** 2 + R[1, 0] ** 2)
     singular = sy < 1e-6
 
@@ -57,7 +52,6 @@ def rot_to_euler_rpy(R):
         pitch = np.arctan2(-R[2, 0], sy)
         yaw = np.arctan2(R[1, 0], R[0, 0])
     else:
-        # Gimbal lock case
         roll = np.arctan2(-R[1, 2], R[1, 1])
         pitch = np.arctan2(-R[2, 0], sy)
         yaw = 0.0
@@ -68,11 +62,10 @@ def rot_to_euler_rpy(R):
 # Main
 # -------------------------------------------------------
 def main():
-    # Initialize AprilTag detector
     at_detector = Detector(
         families="tag36h11",
         nthreads=4,
-        quad_decimate=2.0,     # lower = more accurate, slower; higher = faster, less accurate
+        quad_decimate=2.0,
         quad_sigma=0.0,
         refine_edges=True,
         decode_sharpening=0.25,
@@ -80,6 +73,10 @@ def main():
     )
 
     pipeline = create_pipeline()
+
+    # Make the window resizable (optional, just for nicer viewing)
+    cv2.namedWindow("apriltag_detector", cv2.WINDOW_NORMAL)
+    cv2.resizeWindow("apriltag_detector", 800, 800)
 
     with dai.Device(pipeline) as device:
         qRgb = device.getOutputQueue("rgb", maxSize=4, blocking=False)
@@ -106,58 +103,55 @@ def main():
             now = time.time()
             fps = frame_count / (now - t0)
 
-            # Draw detections
+            h, w = frame.shape[:2]
+
             for det in detections:
                 tag_id = det.tag_id
                 corners = det.corners.astype(int)
                 center = det.center.astype(int)
-                center_xy = (int(center[0]), int(center[1]))
+                cx, cy = int(center[0]), int(center[1])
 
-                # Choose color: highlight your main tags
                 if tag_id in INTEREST_TAG_IDS:
-                    color = (0, 255, 0)   # green
+                    color = (0, 255, 0)
                 else:
-                    color = (255, 0, 0)   # blue for other tags
+                    color = (255, 0, 0)
 
-                # Draw outline
-                cv2.polylines(frame, [corners], isClosed=True, color=color, thickness=2)
+                cv2.polylines(frame, [corners], True, color, 2)
+                cv2.circle(frame, (cx, cy), 4, (0, 0, 255), -1)
 
-                # Draw center
-                cv2.circle(frame, center_xy, 4, (0, 0, 255), -1)
+                R_cam_tag = det.pose_R
+                t_cam_tag = det.pose_t.flatten()
+                x, y, z = t_cam_tag
 
-                # Pose wrt camera
-                R_cam_tag = det.pose_R          # 3x3
-                t_cam_tag = det.pose_t.flatten()  # (3,) in meters
-
-                x, y, z = t_cam_tag  # camera frame coordinates in meters
-
-                # Roll/pitch/yaw in degrees (optional, for debugging)
                 roll, pitch, yaw = rot_to_euler_rpy(R_cam_tag)
-                roll_deg = np.degrees(roll)
-                pitch_deg = np.degrees(pitch)
-                yaw_deg = np.degrees(yaw)
-
-                # Detection confidence: decision_margin
+                roll_deg, pitch_deg, yaw_deg = np.degrees([roll, pitch, yaw])
                 margin = det.decision_margin
 
-                # Text overlays (position in mm + margin)
-                pos_text = f"ID {tag_id}  ({x*1000:.0f}, {y*1000:.0f}, {z*1000:.0f}) mm"
+                pos_text  = f"ID {tag_id}  ({x*1000:.0f}, {y*1000:.0f}, {z*1000:.0f}) mm"
                 conf_text = f"margin: {margin:.1f}"
-                rpy_text = f"rpy(deg): ({roll_deg:.0f}, {pitch_deg:.0f}, {yaw_deg:.0f})"
+                rpy_text  = f"rpy(deg): ({roll_deg:.0f}, {pitch_deg:.0f}, {yaw_deg:.0f})"
 
-                y0 = max(center_xy[1] - 25, 10)
-                cv2.putText(frame, pos_text, (center_xy[0] + 5, y0),
+                # Base text position to the right of the tag
+                base_x = cx + 5
+                base_y = max(cy - 25, 10)
+
+                # Clamp X so text stays inside the image
+                # 180 is a rough max text width in pixels
+                text_margin = 180
+                if base_x > w - text_margin:
+                    base_x = w - text_margin
+
+                cv2.putText(frame, pos_text,  (base_x, base_y),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
-                cv2.putText(frame, conf_text, (center_xy[0] + 5, y0 + 15),
+                cv2.putText(frame, conf_text, (base_x, base_y + 15),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
-                cv2.putText(frame, rpy_text, (center_xy[0] + 5, y0 + 30),
+                cv2.putText(frame, rpy_text,  (base_x, base_y + 30),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 200, 200), 1)
 
-            # Show FPS
             cv2.putText(frame, f"FPS: {fps:.1f}", (10, 25),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
-            cv2.imshow("apriltag_detector - camera frame", frame)
+            cv2.imshow("apriltag_detector", frame)
 
             key = cv2.waitKey(1)
             if key == ord('q'):
