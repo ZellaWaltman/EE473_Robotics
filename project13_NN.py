@@ -68,6 +68,7 @@ def create_yolo_node(
     yolo.setNumClasses(80)
     yolo.setCoordinateSize(4)
 
+    # Anchors for YOLOv5n 416x416 blob
     yolo.setAnchors([
         10, 13, 16, 30, 33, 23,
         30, 61, 62, 45, 59, 119,
@@ -106,10 +107,10 @@ def create_pipeline():
 
     # Mono cameras
     mono_left = pipeline.createMonoCamera()
-    mono_left.setResolution(dai.MonoCameraProperties.SensorResolution.THE_720_P)
+    mono_left.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
 
     mono_right = pipeline.createMonoCamera()
-    mono_right.setResolution(dai.MonoCameraProperties.SensorResolution.THE_720_P)
+    mono_right.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
 
     mono_left.setBoardSocket(dai.CameraBoardSocket.CAM_B)
     mono_right.setBoardSocket(dai.CameraBoardSocket.CAM_C)
@@ -117,7 +118,7 @@ def create_pipeline():
     # Stereo Depth
     stereo = pipeline.createStereoDepth()
     stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.DEFAULT)
-    stereo.setSubpixel(True)
+    stereo.setSubpixel(False)
     stereo.setLeftRightCheck(True)
     stereo.setExtendedDisparity(False)
     stereo.setDepthAlign(dai.CameraBoardSocket.CAM_A)
@@ -161,6 +162,8 @@ def measure_distance(depth_frame_mm, cx, cy, roi_size=7,
     y2 = min(h - 1, cy + half)
 
     roi = depth_frame_mm[y1:y2+1, x1:x2+1].astype(np.float32)
+
+    # Keep only valid depths within range
     roi = roi[(roi > 0) & (roi >= min_valid_mm) & (roi <= max_valid_mm)]
 
     if roi.size == 0:
@@ -227,17 +230,27 @@ with dai.Device(pipeline) as device:
             cx_depth = int(cx_rgb * w_depth / w_rgb)
             cy_depth = int(cy_rgb * h_depth / h_rgb)
 
-            # each `det` is a SpatialDetection
-            X = det.spatialCoordinates.x  # mm
-            Y = det.spatialCoordinates.y  # mm
-            Z = det.spatialCoordinates.z  # mm (distance forward)
+            # Depth measurement via 7x7 ROI median
+            distance_mm = measure_distance(depthFrame, cx_depth, cy_depth)
 
-            dist_m = Z / 1000.0 if Z != 0 else None
-            if dist_m is None:
-            	dist_str = "dist: N/A"
+            # Draw crosshair at measurement point
+            crosshair_size = 5
+            cv2.line(frame, (cx_rgb - crosshair_size, cy_rgb),
+                (cx_rgb + crosshair_size, cy_rgb), (0, 255, 255), 1)
+            cv2.line(frame, (cx_rgb, cy_rgb - crosshair_size),
+                (cx_rgb, cy_rgb + crosshair_size), (0, 255, 255), 1)
+
+            # Format distance string
+            if distance_mm is None:
+                dist_str = "dist: N/A"
             else:
-            	dist_str = f"dist: {dist_m:.2f} m"
-
+                if distance_mm < 1000:
+                	# < 1m: centimeters
+                        dist_str = f"dist: {distance_mm / 10:.0f} cm"
+                else:
+                        # >= 1m: meters
+                        dist_str = f"dist: {distance_mm / 1000:.2f} m"
+            
             text = f"{label} {det.confidence*100:.1f}% {dist_str}"
 
             cv2.putText(frame, text, (x1, max(0, y1 - 10)),
