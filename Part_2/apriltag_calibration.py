@@ -13,7 +13,7 @@ FY = 450.0
 CX = 208.0
 CY = 208.0
 
-# Tag size in meters
+# Tag size in meters (38mmx38mm)
 TAG_SIZE_M = 0.038
 
 # Tags we will use for calibration
