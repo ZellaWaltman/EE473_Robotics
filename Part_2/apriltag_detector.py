@@ -118,6 +118,7 @@ def main():
             now = time.time()
             fps = frame_count / (now - t0)
 
+            # Get image height & width from [height, width, channels] array
             h, w = frame.shape[:2]
 
             # For each detected Apriltag
@@ -142,24 +143,28 @@ def main():
                 t_cam_tag = det.pose_t.flatten() # translation vector of tag wrt cam frame
                 x, y, z = t_cam_tag
 
-                roll, pitch, yaw = rot_to_euler_rpy(R_cam_tag)
-                roll_deg, pitch_deg, yaw_deg = np.degrees([roll, pitch, yaw])
-                margin = det.decision_margin
-
-                pos_text  = f"ID {tag_id}  ({x*1000:.0f}, {y*1000:.0f}, {z*1000:.0f}) mm"
-                conf_text = f"margin: {margin:.1f}"
-                rpy_text  = f"rpy(deg): ({roll_deg:.0f}, {pitch_deg:.0f}, {yaw_deg:.0f})"
+                
+                roll, pitch, yaw = rot_to_euler_rpy(R_cam_tag) # Convert to roll/pitch/yaw (rad)
+                roll_deg, pitch_deg, yaw_deg = np.degrees([roll, pitch, yaw]) # Rad -> deg
+                
+                margin = det.decision_margin # Decision margin (confidence) from Apriltag Detection
+                
+                # Display Text
+                pos_text  = f"ID {tag_id}  ({x*1000:.0f}, {y*1000:.0f}, {z*1000:.0f}) mm" # Tag ID & xyz Position (mm)
+                conf_text = f"margin: {margin:.1f}" # Confidence margin
+                rpy_text  = f"rpy(deg): ({roll_deg:.0f}, {pitch_deg:.0f}, {yaw_deg:.0f})" # Roll/pitch/yaw (deg)
 
                 # Base text position to the right of the tag
                 base_x = cx + 5
                 base_y = max(cy - 25, 10)
 
-                # Clamp X so text stays inside the image
-                # 180 is a rough max text width in pixels
+                # Clamp x so text stays inside the image
+                # ~180 = max text width in pixels
                 text_margin = 180
                 if base_x > w - text_margin:
                     base_x = w - text_margin
 
+                # Draw Bounding Boxes & DISPLAY TEXT
                 cv2.putText(frame, pos_text,  (base_x, base_y),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
                 cv2.putText(frame, conf_text, (base_x, base_y + 15),
@@ -167,9 +172,11 @@ def main():
                 cv2.putText(frame, rpy_text,  (base_x, base_y + 30),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 200, 200), 1)
 
+            # Display FPS
             cv2.putText(frame, f"FPS: {fps:.1f}", (10, 25),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
+            # Show processed frame
             cv2.imshow("apriltag_detector", frame)
 
             key = cv2.waitKey(1)
