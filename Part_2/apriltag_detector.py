@@ -7,44 +7,51 @@ import time
 from pupil_apriltags import Detector
 
 # -------------------------------------------------------
-# Camera intrinsics for 416x416 (approx for OAK-D Wide)
+# Camera intrinsics for 416x416 resolution
 # -------------------------------------------------------
+# focal lengths
 FX = 450.0
 FY = 450.0
+# center coords
 CX = 208.0
 CY = 208.0
 
-# Tag size in METERS
+# Tag size in meters (38mmx38mm)
 TAG_SIZE_M = 0.038
 
-# Highlight these tag IDs (but we still show all)
+# Highlight these tag IDs (highlighted in green)
 INTEREST_TAG_IDS = {0, 1, 2, 3}
 
 # -------------------------------------------------------
-# Build DepthAI pipeline: RGB preview at 416x416
+# Build DepthAI pipeline: RGB preview = 416x416
 # -------------------------------------------------------
 def create_pipeline():
     pipeline = dai.Pipeline()
 
+    # RGB Camera
     cam = pipeline.createColorCamera()
     cam.setPreviewSize(416, 416)
     cam.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
-    cam.setBoardSocket(dai.CameraBoardSocket.CAM_A)  # OAK-D color cam
-    cam.setInterleaved(False)
+    cam.setBoardSocket(dai.CameraBoardSocket.CAM_A) 
+    cam.setInterleaved(False) # 3 seperate RGB channels
     cam.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
     cam.setFps(30)
 
+    # Send Stream "rgb" to camera
     xout = pipeline.createXLinkOut()
     xout.setStreamName("rgb")
-    cam.preview.link(xout.input)
+    cam.preview.link(xout.input) # Previews streamed out
 
     return pipeline
 
 # -------------------------------------------------------
-# Convert rotation matrix to roll/pitch/yaw (optional)
+# Convert rot matrix -> roll/pitch/yaw (for report)
 # -------------------------------------------------------
+# Avoiding SciPy bc it is a large dependency & we want less compute
+
 def rot_to_euler_rpy(R):
-    sy = np.sqrt(R[0, 0] ** 2 + R[1, 0] ** 2)
+    # Check for gimbal lock
+    sy = np.sqrt(R[0, 0] ** 2 + R[1, 0] ** 2) # r00 = r10
     singular = sy < 1e-6
 
     if not singular:
@@ -62,65 +69,77 @@ def rot_to_euler_rpy(R):
 # Main
 # -------------------------------------------------------
 def main():
+    # Create Apriltag detector from:
     at_detector = Detector(
         families="tag36h11",
-        nthreads=4,
-        quad_decimate=2.0,
-        quad_sigma=0.0,
-        refine_edges=True,
-        decode_sharpening=0.25,
-        debug=False,
+        nthreads=4, # 4 CPU threads for detections
+        quad_decimate=2.0, # Downsample image by 2 for speed
+        quad_sigma=0.0, # 0 Gaussian Blur
+        refine_edges=True, # Refine Detected Edges (more accurate corners)
+        decode_sharpening=0.25, # Sharpen Image
+        debug=False, # Disable Debug Visualizations
     )
 
     pipeline = create_pipeline()
 
-    # Make the window resizable (optional, just for nicer viewing)
+    # Make the preview window resizable (just for nicer viewing)
     cv2.namedWindow("apriltag_detector", cv2.WINDOW_NORMAL)
     cv2.resizeWindow("apriltag_detector", 800, 800)
 
+    # Load pipeline into OAK Camera
     with dai.Device(pipeline) as device:
+        # Queue size = 4, will store 4 frames
+        # maxSize=4, blocking=False avoids app stalling if one stream lags; old frames drop instead
         qRgb = device.getOutputQueue("rgb", maxSize=4, blocking=False)
 
-        frame_count = 0
-        t0 = time.time()
+        frame_count = 0 # Frame count for FPS computation
+        t0 = time.time() # Start Time for FPS computation
 
+        # Start Message
         print("[INFO] Starting AprilTag detector. Press 'q' to quit.")
 
         while True:
             inRgb = qRgb.get()
-            frame = inRgb.getCvFrame()   # 416x416 BGR image
+            frame = inRgb.getCvFrame() # 416x416 BGR image
 
+            # Convert color -> grayscale for Apriltag detector
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
+            # Apriltag Detector
             detections = at_detector.detect(
                 gray,
-                estimate_tag_pose=True,
-                camera_params=[FX, FY, CX, CY],
-                tag_size=TAG_SIZE_M,
+                estimate_tag_pose=True, # Estimate rot & translation of each tag from cam intrinsics
+                camera_params=[FX, FY, CX, CY], # Cam intrinsics
+                tag_size=TAG_SIZE_M, # Apriltag size (38mmx38mm)
             )
-
+            
+            # FPS Computation
             frame_count += 1
             now = time.time()
             fps = frame_count / (now - t0)
 
             h, w = frame.shape[:2]
 
+            # For each detected Apriltag
             for det in detections:
-                tag_id = det.tag_id
-                corners = det.corners.astype(int)
-                center = det.center.astype(int)
-                cx, cy = int(center[0]), int(center[1])
+                tag_id = det.tag_id # Get ID
+                corners = det.corners.astype(int) # Corners for bounding box drawing
+                center = det.center.astype(int) # Center point of tag
+                cx, cy = int(center[0]), int(center[1]) # x & y coords of center point of tag
 
+                # Highlight tags in green
                 if tag_id in INTEREST_TAG_IDS:
                     color = (0, 255, 0)
                 else:
                     color = (255, 0, 0)
 
+                # Draw bounding box around tag & circle at center
                 cv2.polylines(frame, [corners], True, color, 2)
                 cv2.circle(frame, (cx, cy), 4, (0, 0, 255), -1)
 
-                R_cam_tag = det.pose_R
-                t_cam_tag = det.pose_t.flatten()
+                # Tag Rot Matrices wrt Cam Coords
+                R_cam_tag = det.pose_R # rot matrix of tag wrt cam frame
+                t_cam_tag = det.pose_t.flatten() # translation vector of tag wrt cam frame
                 x, y, z = t_cam_tag
 
                 roll, pitch, yaw = rot_to_euler_rpy(R_cam_tag)
