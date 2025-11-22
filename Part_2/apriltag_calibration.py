@@ -7,46 +7,45 @@ import time
 import yaml
 from pupil_apriltags import Detector
 
-# ---------------- Camera intrinsics (416x416, approx OAK-D Wide) ----------------
+# -------------------------------------------------------
+# Camera intrinsics for 416x416 resolution
+# -------------------------------------------------------
+# focal lengths
 FX = 450.0
 FY = 450.0
+# center coords
 CX = 208.0
 CY = 208.0
 
 # Tag size in meters (38mmx38mm)
 TAG_SIZE_M = 0.038
 
-# Tags we will use for calibration
+# Tags used for calibration
 TAG_IDS = [0, 1, 2, 3]
 
-# How many pose samples we want per tag
+# How pose samples per tag
 SAMPLES_PER_TAG = 30
 
 # File paths
 KNOWN_POSITIONS_YAML = "apriltag_known_positions.yaml"
 OUTPUT_CALIB_YAML = "camera_robot_calibration.yaml"
 
-
-# ---------------- Load known tag positions in robot base frame ----------------
+# -------------------------------------------------------
+# Load known tag positions in robot base frame
+# -------------------------------------------------------
 def load_tag_positions_robot():
-    """
-    Expects YAML like:
+    # Expects apriltag_known_positions.yaml
 
-    tag_positions:
-      0: [0.30, -0.20, 0.00]
-      1: [0.30,  0.20, 0.00]
-      2: [0.098, -0.20, 0.00]
-      3: [0.098,  0.20, 0.00]
-
-    tag_size_m: 0.038
-    """
+    # Parse apriltag_known_positions.yaml into python dictionary
     with open(KNOWN_POSITIONS_YAML, "r") as f:
         data = yaml.safe_load(f)
 
+    # Take tag positions from apriltag_known_positions
+    # Convert keys -> int & values to [x, y, z] numpy arrays
     tag_positions = {int(k): np.array(v, dtype=float)
                      for k, v in data["tag_positions"].items()}
 
-    # Optional: override TAG_SIZE_M from file if present
+    # Override TAG_SIZE_M w/ size from .yaml file if present
     if "tag_size_m" in data:
         global TAG_SIZE_M
         TAG_SIZE_M = float(data["tag_size_m"])
@@ -54,43 +53,51 @@ def load_tag_positions_robot():
 
     return tag_positions
 
+# -------------------------------------------------------
+# Rigid transform solver: P_robot = R * P_cam + t 
+# -------------------------------------------------------
+#    P_cam:   Nx3 points in camera frame
+#    P_robot: Nx3 corresponding points in robot base frame
+#    Returns: R (3x3), t (3,)
 
-# ---------------- Rigid transform solver: P_robot = R * P_cam + t --------------
 def solve_rigid_transform(P_cam, P_robot):
-    """
-    P_cam:   Nx3 points in camera frame
-    P_robot: Nx3 corresponding points in robot base frame
-    Returns: R (3x3), t (3,)
-    """
-    assert P_cam.shape == P_robot.shape
-    N = P_cam.shape[0]
-    assert N >= 3, "Need at least 3 non-collinear points for a stable transform"
+    assert P_cam.shape == P_robot.shape # Cam & Robot coors must have same size
+    N = P_cam.shape[0] # Needs 3 points for transform
+    assert N >= 3, "Need at least 3 points for a transform"
 
+    # Get average coords (centroids) in each frame
     cam_mean = P_cam.mean(axis=0)
     robot_mean = P_robot.mean(axis=0)
-
+    
+    # Center points around p
     Pc = P_cam - cam_mean
     Pr = P_robot - robot_mean
 
-    H = Pc.T @ Pr  # 3x3
+    # H matrix
+    H = Pc.T @ Pr
 
+    # Get rotation - Kabsch algorithm
+    #    U = rot info from robot frame
+    #    C = rot info from cam frame
+    #    S = scaling factors
     U, S, Vt = np.linalg.svd(H)
-    R = Vt.T @ U.T
+    R = Vt.T @ U.T # Recover rot matrix
 
-    # Fix improper rotation (reflection)
+    # Fix improper reflection if present
     if np.linalg.det(R) < 0:
         Vt[2, :] *= -1
         R = Vt.T @ U.T
 
-    t = robot_mean - R @ cam_mean
+    # Get cam rot & position wrt Robot Base Frame
+    t = robot_mean - R @ cam_mean # Pr = RPc + t
     return R, t
 
+# -------------------------------------------------------
+# Convert rot matrix -> roll/pitch/yaw (for report)
+# -------------------------------------------------------
+#    Return roll, pitch, yaw (radians) from 3x3 R
 
-# ---------------- Convert rotation matrix to roll/pitch/yaw -------------------
 def rot_to_euler_rpy(R):
-    """
-    Returns roll, pitch, yaw (radians) from 3x3 R.
-    """
     sy = np.sqrt(R[0, 0] ** 2 + R[1, 0] ** 2)
     singular = sy < 1e-6
 
@@ -105,43 +112,48 @@ def rot_to_euler_rpy(R):
 
     return roll, pitch, yaw
 
-
-# ---------------- DepthAI pipeline: 416x416 RGB preview -----------------------
+# -------------------------------------------------------
+# Build DepthAI pipeline: RGB preview = 416x416
+# -------------------------------------------------------
 def create_pipeline():
     pipeline = dai.Pipeline()
-
+    
+    # RGB Camera
     cam = pipeline.createColorCamera()
     cam.setPreviewSize(416, 416)
     cam.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
     cam.setBoardSocket(dai.CameraBoardSocket.CAM_A)
-    cam.setInterleaved(False)
+    cam.setInterleaved(False) # 3 seperate RGB channels
     cam.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
     cam.setFps(30)
 
+    # Send Stream "rgb" to camera
     xout = pipeline.createXLinkOut()
     xout.setStreamName("rgb")
-    cam.preview.link(xout.input)
+    cam.preview.link(xout.input) # Previews streamed out
 
     return pipeline
 
-
-# ---------------- Main calibration routine -----------------------------------
+# -------------------------------------------------------
+# Main
+# -------------------------------------------------------
 def main():
+    # Get known tag positions from .yaml
     tag_positions_robot = load_tag_positions_robot()
 
-    # Make sure all TAG_IDS exist in YAML
+    # Make sure all tag IDs exist w/ ground truth in .yaml
     for tid in TAG_IDS:
         if tid not in tag_positions_robot:
             raise RuntimeError(f"Tag ID {tid} not found in {KNOWN_POSITIONS_YAML}")
 
     detector = Detector(
         families="tag36h11",
-        nthreads=4,
-        quad_decimate=2.0,
-        quad_sigma=0.0,
-        refine_edges=True,
-        decode_sharpening=0.25,
-        debug=False,
+        nthreads=4, # 4 CPU threads for detections
+        quad_decimate=2.0, # Downsample image by 2 for speed
+        quad_sigma=0.0, # 0 Gaussian Blur
+        refine_edges=True, # Refine Detected Edges (more accurate corners)
+        decode_sharpening=0.25, # Sharpen Image
+        debug=False, # Disable Debug Visualizations
     )
 
     pipeline = create_pipeline()
@@ -149,30 +161,39 @@ def main():
     # Storage for camera-frame samples
     samples_cam = {tid: [] for tid in TAG_IDS}
 
+    # Make the preview window resizable (just for nicer viewing)
     cv2.namedWindow("calibration_collection", cv2.WINDOW_NORMAL)
     cv2.resizeWindow("calibration_collection", 800, 800)
 
+    # Load pipeline onto OAK Camera
     with dai.Device(pipeline) as device:
+        # Queue size = 4, will store 4 frames
+        # maxSize=4, blocking=False avoids app stalling if one stream lags; old frames drop instead
         qRgb = device.getOutputQueue("rgb", maxSize=4, blocking=False)
 
-        t0 = time.time()
-        frame_count = 0
+        frame_count = 0 # Frame count for FPS computation
+        t0 = time.time() # Start Time for FPS computation
 
+        # Start Message
         print("[INFO] Collecting AprilTag samples for calibration...")
         print(f"       Required samples per tag: {SAMPLES_PER_TAG}")
 
         while True:
             inRgb = qRgb.get()
-            frame = inRgb.getCvFrame()
+            frame = inRgb.getCvFrame() # 416x416 BGR image
+
+            # Convert color -> grayscale for Apriltag detector
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
+            # Apriltag Detector
             detections = detector.detect(
                 gray,
-                estimate_tag_pose=True,
-                camera_params=[FX, FY, CX, CY],
-                tag_size=TAG_SIZE_M,
+                estimate_tag_pose=True, # Estimate rot & translation of each tag from cam intrinsics
+                camera_params=[FX, FY, CX, CY], # Cam intrinsics
+                tag_size=TAG_SIZE_M, # Apriltag size (38mmx38mm)
             )
 
+            # FPS Computation
             frame_count += 1
             fps = frame_count / (time.time() - t0)
 
@@ -191,7 +212,7 @@ def main():
                     t_cam = det.pose_t.flatten()  # 3D position in camera frame (meters)
                     samples_cam[tid].append(t_cam)
 
-            # Text overlay: sample counts
+            # Display sample counts text
             y0 = 30
             for tid in TAG_IDS:
                 n = len(samples_cam[tid])
@@ -200,12 +221,22 @@ def main():
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
                 y0 += 25
 
-            cv2.putText(frame, f"FPS: {fps:.1f}", (10, 25),
+            # Print FPS at bottom right of screen
+            h, w = frame.shape[:2]
+            text = f"FPS: {fps:.1f}"
+            (text_w, text_h), _ = cv2.getTextSize(text,
+                                                  cv2.FONT_HERSHEY_SIMPLEX,
+                                                  0.7, 2)
+            
+            x = w - text_w - 10     # 10 px from right
+            y = h - 10              # 10 px from bottom
+            
+            cv2.putText(frame, text, (x, y),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
 
             cv2.imshow("calibration_collection", frame)
 
-            # Check if we have enough samples for all tags
+            # Check there are enough samples for all tags
             if all(len(samples_cam[tid]) >= SAMPLES_PER_TAG for tid in TAG_IDS):
                 print("[INFO] Collected enough samples for all tags.")
                 break
@@ -218,7 +249,8 @@ def main():
 
         cv2.destroyAllWindows()
 
-    # ----------------- Compute calibration from collected samples -------------
+    # Compute calibration from collected samples
+    # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     print("[INFO] Computing calibration...")
 
     P_cam_list = []
@@ -260,7 +292,8 @@ def main():
     roll, pitch, yaw = rot_to_euler_rpy(R)
     roll_deg, pitch_deg, yaw_deg = np.degrees([roll, pitch, yaw])
 
-    # ----------------- Save calibration to YAML ------------------------------
+    # Save calibration to .yaml
+    # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     calib_data = {
         "rotation_matrix": R.tolist(),
         "translation_m": t.tolist(),
