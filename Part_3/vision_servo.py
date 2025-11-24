@@ -37,9 +37,9 @@ ALPHA = 0.3
 # Workspace / safety limits (robot frame, meters)
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 REACH_MIN = 0.15 # min radius from base (avoid EE getting too close)
-REACH_MAX = 0.45 # max reach
+REACH_MAX = 0.30 # max reach (Arm has ~0.32 cm reach)
 Z_MIN = 0.05 # 5 cm above table
-Z_MAX = 0.40 # 40 cm above table
+Z_MAX = 0.30 # 30 cm above table
 
 # Target YOLO classes (COCO names) and key bindings
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
