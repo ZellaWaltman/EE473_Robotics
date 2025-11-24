@@ -85,7 +85,7 @@ class RobotInterface:
         self.api = dType.load()
 
         # Connect to Dobot Magician ("" = auto-select first arm found, USB baud rate)
-        state = dType.ConnectDobot(self.api, "", 115200)[0]
+        state = dType.ConnectDobot(self.api, "/dev/ttyUSB0", 115200)[0]
         if state != dType.DobotConnect.DobotConnect_NoError: # Failure to connect case
             raise RuntimeError(f"Failed to connect to Dobot, error code: {state}")
         print("Connected to Dobot Magician.")
@@ -361,6 +361,7 @@ def clamp_workspace(P_robot):
 # Main visual servoing loop
 # ---------------------------------------------------------------------------
 def main():
+    breakpoint()
     # Load calibration
     R, t = load_calibration()
 
