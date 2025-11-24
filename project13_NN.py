@@ -79,8 +79,8 @@ def create_yolo_node(
     })
 
     yolo.setNumInferenceThreads(2)
-    yolo.input.setBlocking(False)
-    yolo.input.setQueueSize(1)
+    yolo.input.setBlocking(False) # Allow parallel inference
+    yolo.input.setQueueSize(1) # Minimize queue size, avoid stale frame build-up
 
     return yolo
 
