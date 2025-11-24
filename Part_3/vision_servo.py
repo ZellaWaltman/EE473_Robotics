@@ -6,7 +6,7 @@ import numpy as np
 import time
 import yaml
 import blobconverter
-from dobot_sdk import DobotDllType as dType
+import DobotDllType as dType
 from collections import deque
 
 # -------------------------------------------------------
