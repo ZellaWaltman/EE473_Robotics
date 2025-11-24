@@ -143,27 +143,35 @@ def create_pipeline():
 # ----------------------------------------------------
 # Measure depth (7×7 ROI median)
 # ----------------------------------------------------
+#    depth_frame_mm: 2D array from OAK (mm).
+#    (cx, cy): center pixel of the detection (in depth frame coordinates).
+#    roi_size: size of square region around that pixel.
+#     min_valid_mm/max_valid_mm: clamp valid depth range.
+
 def measure_distance(depth_frame_mm, cx, cy, roi_size=7,
                      min_valid_mm=300, max_valid_mm=15000):
 
-    h, w = depth_frame_mm.shape[:2]
-
+    h, w = depth_frame_mm.shape[:2] # Get height & width
+                         
+    # Get bounds of square window centered at (cx, cy), clamp to image boundaries
     half = roi_size // 2
     x1 = max(0, cx - half)
     x2 = min(w - 1, cx + half)
     y1 = max(0, cy - half)
     y2 = min(h - 1, cy + half)
-
+                         
+    # Extract RoI
     roi = depth_frame_mm[y1:y2+1, x1:x2+1].astype(np.float32)
 
     # Keep only valid depths within range
     roi = roi[(roi > 0) & (roi >= min_valid_mm) & (roi <= max_valid_mm)]
 
+    # Filter out zero/invalid values
     if roi.size == 0:
         return None
 
+    # Return median depth in mm
     return float(np.median(roi))
-
 
 # ----------------------------------------------------
 # Main
