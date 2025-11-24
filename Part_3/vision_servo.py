@@ -22,28 +22,33 @@ CY = 208.0
 DEPTH_MIN_M = 0.3
 DEPTH_MAX_M = 1.8
 
-# YOLO model (DepthAI blob)
+# YOLO Model Config
+# - - - - - - - - - - - - - - -
 MODEL_NAME = "yolov5n_coco_416x416"
 ZOO_TYPE = "depthai"
 
-# Calibration files
+# Calibration File
 CALIB_FILE = "camera_robot_calibration.yaml"
 
-# Exponential smoothing factor
+# Exponential smoothing factor for filtered 3D target position
+# P_smooth = ALPHA * P_new + (1 - ALPHA) * P_old
 ALPHA = 0.3
 
 # Workspace / safety limits (robot frame, meters)
-REACH_MIN = 0.15     # min radius from base (avoid singularity)
-REACH_MAX = 0.45     # max reach
-Z_MIN = 0.05         # 5 cm above table
-Z_MAX = 0.40         # 40 cm above table
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+REACH_MIN = 0.15 # min radius from base (avoid EE getting too close)
+REACH_MAX = 0.45 # max reach
+Z_MIN = 0.05 # 5 cm above table
+Z_MAX = 0.40 # 40 cm above table
 
 # Target YOLO classes (COCO names) and key bindings
-TARGET_CLASSES = ["bottle", "cup", "person"]  # choose 3
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+TARGET_CLASSES = ["bottle", "cup", "person"] # 3 classes
+# Swaps which object is being targeted based on user key press
 TARGET_KEYS = ["a", "b", "c"] # 'a' = 0, 'b' = 1, 'c' = 2
 
 # Confidence threshold
-CONF_THRESH = 0.5
+CONF_THRESH = 0.45
 
 # Timeout for lost target (seconds)
 TARGET_LOST_TIMEOUT = 3.0
@@ -63,7 +68,7 @@ LABEL_MAP = [
 ]
 
 # ---------------------------------------------------------------------------
-# Robot interface abstraction
+# Robot Interface
 # ---------------------------------------------------------------------------
 class RobotInterface:
     def __init__(self):
@@ -104,14 +109,17 @@ class RobotInterface:
 # ---------------------------------------------------------------------------
 # Load calibration: R, t (camera -> robot)
 # ---------------------------------------------------------------------------
+# Open camera_robot_calibration.yaml and parses it into a Python dictionary
 def load_calibration(calib_file=CALIB_FILE):
     with open(calib_file, "r") as f:
         data = yaml.safe_load(f)
 
-    R = np.array(data["rotation_matrix"], dtype=float)        # 3x3
-    t = np.array(data["translation_m"], dtype=float).reshape(3)  # 3,
+    # Get rotation matrix & translation vector (camera wrt robot frame)
+    R = np.array(data["rotation_matrix"], dtype=float)
+    t = np.array(data["translation_m"], dtype=float).reshape(3)
 
-    print("[CALIB] Loaded camera->robot transform:")
+    # Display to user
+    print("Calibration: Loaded camera -> robot transform:")
     print("R =\n", R)
     print("t =", t)
     return R, t
@@ -140,7 +148,7 @@ def create_yolo_node(
     yolo.setConfidenceThreshold(conf_thr)
     yolo.setIouThreshold(iou_thr)
     yolo.setNumClasses(80)
-    yolo.setCoordinateSize(4)
+    yolo.setCoordinateSize(4) # 4 coordinates per bounding box
 
     # Anchors for YOLOv5n 416x416 blob
     yolo.setAnchors([
@@ -160,8 +168,8 @@ def create_yolo_node(
     })
 
     yolo.setNumInferenceThreads(2)
-    yolo.input.setBlocking(False)
-    yolo.input.setQueueSize(1)
+    yolo.input.setBlocking(False) # Allow parallel inference
+    yolo.input.setQueueSize(1) # Minimize queue size, avoid stale frame build-up
 
     return yolo
 
@@ -171,7 +179,7 @@ def create_yolo_node(
 def create_pipeline():
     pipeline = dai.Pipeline()
 
-    # Color camera
+    # RGB camera
     cam_rgb = pipeline.createColorCamera()
     cam_rgb.setPreviewSize(416, 416)
     cam_rgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
@@ -182,9 +190,11 @@ def create_pipeline():
 
     # Mono cameras for stereo depth
     mono_left = pipeline.createMonoCamera()
-    mono_right = pipeline.createMonoCamera()
     mono_left.setResolution(dai.MonoCameraProperties.SensorResolution.THE_720_P)
+
+    mono_right = pipeline.createMonoCamera()
     mono_right.setResolution(dai.MonoCameraProperties.SensorResolution.THE_720_P)
+
     mono_left.setBoardSocket(dai.CameraBoardSocket.CAM_B)
     mono_right.setBoardSocket(dai.CameraBoardSocket.CAM_C)
 
@@ -221,61 +231,72 @@ def create_pipeline():
 # ----------------------------------------------------
 # Measure depth (9×9 ROI median)
 # ----------------------------------------------------
+#    depth_frame_mm: 2D array from OAK (mm).
+#    (cx, cy): center pixel of the detection (in depth frame coordinates).
+#    roi_size: size of square region around that pixel.
+#     min_valid_mm/max_valid_mm: clamp valid depth range.
+
 def measure_distance(depth_frame_mm, cx, cy, roi_size=9,
                      min_valid_mm=300, max_valid_mm=15000):
+                         
+    h, w = depth_frame_mm.shape[:2] # Get height & width
 
-    h, w = depth_frame_mm.shape[:2]
-
+    # Get bounds of square window centered at (cx, cy), clamp to image boundaries
     half = roi_size // 2
     x1 = max(0, cx - half)
     x2 = min(w - 1, cx + half)
     y1 = max(0, cy - half)
     y2 = min(h - 1, cy + half)
 
+    # Extract RoI
     roi = depth_frame_mm[y1:y2+1, x1:x2+1].astype(np.float32)
 
     # Keep only valid depths within range
     roi = roi[(roi > 0) & (roi >= min_valid_mm) & (roi <= max_valid_mm)]
 
+    # Filter out zero/invalid values
     if roi.size == 0:
         return None
-
+        
+    # Return median depth in mm
     return float(np.median(roi))
 
 # ---------------------------------------------------------------------------
-# Apply R, t: camera → robot
+# Apply R, t: Convert Camera Frame -> Robot Frame
 # ---------------------------------------------------------------------------
 def camera_to_robot(P_cam, R, t):
-    # P_cam: np.array([x, y, z])
+    # Multiply 3D point in camera frame by R & add t
+    # P_cam = np.array([x, y, z])
     return R @ P_cam + t
 
 # ---------------------------------------------------------------------------
 # Workspace limiting (reach + z clamp)
 # ---------------------------------------------------------------------------
 def clamp_workspace(P_robot):
-    x, y, z = P_robot
-    r = np.sqrt(x**2 + y**2)
+    x, y, z = P_robot # Split 3D point into components (x, y, z)
+    r = np.sqrt(x**2 + y**2) # radial distance from base (XY plane)
 
-    # Scale outward if too close
+    # Scale outward if too close to base
     if r < REACH_MIN and r > 1e-4:
         scale = REACH_MIN / r
         x *= scale
         y *= scale
-        print("[WORKSPACE] Below REACH_MIN, scaling outward")
+        print("Workspace Below REACH_MIN, scaling outward")
 
     # Scale inward if too far
     if r > REACH_MAX:
         scale = REACH_MAX / r
         x *= scale
         y *= scale
-        print("[WORKSPACE] Above REACH_MAX, scaling inward")
+        print("Workspace Above REACH_MAX, scaling inward")
 
     # Clamp Z
     z_clamped = max(Z_MIN, min(Z_MAX, z))
     if z_clamped != z:
-        print("[WORKSPACE] Clamping Z from", z, "to", z_clamped)
+        print("Workspace: Clamping Z from", z, "to", z_clamped)
     z = z_clamped
 
+    # Return a safe robot-frame position
     return np.array([x, y, z], dtype=float)
 
 # ---------------------------------------------------------------------------
@@ -285,7 +306,7 @@ def main():
     # Load calibration
     R, t = load_calibration()
 
-    # Init robot interface
+    # Initialize robot interface
     robot = RobotInterface()
     robot.go_to_sleep()
 
@@ -293,54 +314,63 @@ def main():
     pipeline = create_pipeline()
 
     # State variables
-    tracking_enabled = False
-    current_target_index = 0  # 0,1,2 → TARGET_CLASSES
-    current_target_class = TARGET_CLASSES[current_target_index]
+    tracking_enabled = False # Whether robot is actively tracking
+    current_target_index = 0  # 0,1,2 -> TARGET_CLASSES
+    current_target_class = TARGET_CLASSES[current_target_index] # Which object is being tracked
 
-    last_target_time = 0.0
-    P_smooth = None
+    last_target_time = 0.0 # Last time there was valid detection
+    P_smooth = None # Smoothed 3D target position
 
     # FPS tracking
     frame_count = 0
     t0 = time.time()
 
+    # Resizable window for visualization
     cv2.namedWindow("visual_servo", cv2.WINDOW_NORMAL)
     cv2.resizeWindow("visual_servo", 900, 600)
 
+    # Load pipeline into OAK Camera
     with dai.Device(pipeline) as device:
+        # Queue size = 4, will store 4 frames
+        # maxSize=4, blocking=False avoids app stalling if one stream lags; old frames drop instead
         qRgb = device.getOutputQueue("rgb", maxSize=4, blocking=False)
         qDet = device.getOutputQueue("detections", maxSize=4, blocking=False)
         qDepth = device.getOutputQueue("depth", maxSize=4, blocking=False)
 
-        print("[INFO] Visual servoing started.")
+        print("Info: Visual servoing started.")
         print("      't' - toggle tracking on/off")
         print("      'a'/'b'/'c' - switch target class")
         print("      'q' - emergency stop & quit")
 
+        # --------------------------------
+        # Main Loop
+        # --------------------------------
         while True:
             inRgb = qRgb.get()
             inDet = qDet.get()
             inDepth = qDepth.get()
 
-            frame = inRgb.getCvFrame()
-            depth_frame = inDepth.getFrame()  # uint16 mm
+            frame = inRgb.getCvFrame() # Convert RGB -> OpenCV BGR
+            depth_frame = inDepth.getFrame() # Raw depth, 2D array (mm)
 
+            # Get height/width of RGB & depth images
             h_rgb, w_rgb = frame.shape[:2]
             h_depth, w_depth = depth_frame.shape[:2]
 
+            # Update frame count & compute FPS
             frame_count += 1
             fps = frame_count / (time.time() - t0)
 
-            detections = inDet.detections
+            detections = inDet.detections # Get list of YOLO detection objects
 
             # Choose best detection of current target class
             best_det = None
             best_conf = 0.0
 
             for det in detections:
-                if det.label >= len(LABEL_MAP):
+                if det.label >= len(LABEL_MAP): # Skip invalid labels
                     continue
-                label = LABEL_MAP[det.label]
+                label = LABEL_MAP[det.label] # Convert # label -> string
                 conf = det.confidence
 
                 # Color for visualization
@@ -350,6 +380,8 @@ def main():
                     color = (100, 100, 100)  # gray for others
 
                 # Bounding box in RGB pixels
+                # Convert normalized YOLO coords (0–1) to pixel coords
+                # Clamp to image boundaries
                 x1 = int(det.xmin * w_rgb)
                 y1 = int(det.ymin * h_rgb)
                 x2 = int(det.xmax * w_rgb)
@@ -359,29 +391,34 @@ def main():
                 y1 = max(0, min(y1, h_rgb - 1))
                 y2 = max(0, min(y2, h_rgb - 1))
 
+                # Draw bounding box on frame
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
 
                 cx_rgb = (x1 + x2) // 2
                 cy_rgb = (y1 + y2) // 2
 
+                # Get center of bounding box in pixel coords & draw cross
                 cv2.drawMarker(frame, (cx_rgb, cy_rgb),
                                color, markerType=cv2.MARKER_CROSS,
                                markerSize=8, thickness=2)
 
+                # Class & Confidence Labels
                 label_txt = f"{label} {conf*100:.1f}%"
                 cv2.putText(frame, label_txt,
                             (x1, max(0, y1 - 5)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
 
-                # Track only current target class with confidence threshold
+                # Track only current target class w/ confidence threshold
                 if label == current_target_class and conf > CONF_THRESH:
                     if conf > best_conf:
                         best_conf = conf
                         best_det = (cx_rgb, cy_rgb, conf)
 
+            # Initialize variables for debugging/overlay
             P_robot_target = None
             depth_str = "N/A"
 
+            # Unpack best detection center & confidence
             if best_det is not None:
                 cx_rgb, cy_rgb, conf = best_det
 
@@ -389,37 +426,41 @@ def main():
                 cx_depth = int(cx_rgb * w_depth / w_rgb)
                 cy_depth = int(cy_rgb * h_depth / h_rgb)
 
-                # Depth in meters
+                # Depth in meters (using RoI)
                 depth_m = measure_distance(depth_frame, cx_depth, cy_depth, roi_size=9)
 
+                # Valid depth -> display as string
                 if depth_m is not None:
                     depth_str = f"{depth_m:.2f} m"
 
                     # Pinhole model: camera frame coordinates
+                    # (u - cx) * Z / fx, (v - cy) * Z / fy
                     X_cam = (cx_rgb - CX) * depth_m / FX
                     Y_cam = (cy_rgb - CY) * depth_m / FY
                     Z_cam = depth_m
 
+                    # Build 3D vector in camera frame
                     P_cam = np.array([X_cam, Y_cam, Z_cam], dtype=float)
-                    P_robot = camera_to_robot(P_cam, R, t)
+                    P_robot = camera_to_robot(P_cam, R, t) # Camera Frame -> Robot Frame
 
-                    # Workspace limiting
+                    # Workspace Limiting
                     P_robot = clamp_workspace(P_robot)
                     P_robot_target = P_robot
 
-                    # Exponential smoothing
+                    # Exponential Smoothing - Reduce Jitter
                     if P_smooth is None:
                         P_smooth = P_robot
                     else:
                         P_smooth = ALPHA * P_robot + (1.0 - ALPHA) * P_smooth
-
+                        
+                    # Update time when target was last seen
                     last_target_time = time.time()
 
-                    # If tracking enabled, send command
+                    # If tracking enabled, send smoothed position to robot
                     if tracking_enabled:
                         robot.point_at(P_smooth[0], P_smooth[1], P_smooth[2])
 
-                    # Show 3D pos on frame
+                    # Show 3D Robot position on frame
                     pos_text = f"Robot XYZ: ({P_smooth[0]:.3f}, {P_smooth[1]:.3f}, {P_smooth[2]:.3f}) m"
                     cv2.putText(frame, pos_text, (10, h_rgb - 40),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
@@ -427,12 +468,13 @@ def main():
             # If no target for a while and tracking is on -> go to sleep
             now = time.time()
             if tracking_enabled and (now - last_target_time > TARGET_LOST_TIMEOUT):
-                print("[INFO] Target lost, returning to sleep pose.")
+                print("Target lost, returning to sleep pose.")
                 tracking_enabled = False
                 robot.go_to_sleep()
                 P_smooth = None
 
-            # Status overlay
+            # Status overlays
+            # - - - - - - - - - - - - - - - - - - - - - -
             status_text = f"FPS: {fps:.1f}"
             cv2.putText(frame, status_text, (10, 20),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
@@ -449,20 +491,26 @@ def main():
             depth_text = f"Depth: {depth_str}"
             cv2.putText(frame, depth_text, (10, 85),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
-
+            
+            # Display annotated frame
             cv2.imshow("visual_servo", frame)
 
+            # 'q' = emergency stop -> send robot to sleep & exit program
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
                 print("[INFO] Emergency stop & exit.")
                 robot.emergency_stop()
                 robot.go_to_sleep()
                 break
+                
+            # 't' = toggle tracking ON/OFF. OFF -> robot to sleep
             elif key == ord('t'):
                 tracking_enabled = not tracking_enabled
                 print(f"[INFO] Tracking {'ENABLED' if tracking_enabled else 'DISABLED'}")
                 if not tracking_enabled:
                     robot.go_to_sleep()
+                    
+            # 'a', 'b', 'c' = switch which object class to track
             elif key in [ord('a'), ord('b'), ord('c')]:
                 idx = TARGET_KEYS.index(chr(key))
                 current_target_index = idx
@@ -470,6 +518,7 @@ def main():
                 print(f"[INFO] Switched target class to: {current_target_class}")
                 P_smooth = None  # reset smoothing
 
+        # Close OpenCV windows after breaking from loop
         cv2.destroyAllWindows()
 
 if __name__ == "__main__":
