@@ -6,7 +6,7 @@ import numpy as np
 import time
 import yaml
 import blobconverter
-import DobotDllType as dType
+from dobot_sdk import DobotDllType as dType
 from collections import deque
 
 # -------------------------------------------------------
@@ -115,21 +115,21 @@ class RobotInterface:
     # - - - - - - - - - - - - - - - - - - - - - - - - - -
     # x_mm, y_mm, z_mm = Cartesian position in millimeters
     # r_deg = rotation of end effector in degrees
+
+    # Changing Robot in degrees? NEW ADDITION, we'll see (CHANGE COMMENTS LATER)
     def go_to_sleep(self):
-        print("[ROBOT] Going to sleep pose...")
+        print("[ROBOT] Going to sleep pose (joint home)...")
 
-        # Move to sleep pose 
-        x_mm = self.SLEEP_X * 1000.0
-        y_mm = self.SLEEP_Y * 1000.0
-        z_mm = self.SLEEP_Z * 1000.0
-        r_deg = self.SLEEP_R
+        base_deg   = 0.0
+        rear_deg   = 10.0
+        fore_deg   = 30.0
+        wrist_deg  = 0.0
 
-        # Linear XYZ move to safe pose
         dType.SetPTPCmd(
             self.api,
-            dType.PTPMode.PTPMOVLXYZ, # Linear in Cartesian XYZ (straight line)
-            x_mm, y_mm, z_mm, r_deg,
-            isQueued=1 # add command to Dobot’s internal command queue
+            dType.PTPMode.PTPMOVLANGLE,
+            base_deg, rear_deg, fore_deg, wrist_deg,
+            isQueued=1
         )
 
     # Object Tracking Movement
