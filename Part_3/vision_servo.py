@@ -71,6 +71,10 @@ LABEL_MAP = [
 # ---------------------------------------------------------------------------
 # Robot Interface
 # ---------------------------------------------------------------------------
+# x_mm, y_mm, z_mm = Cartesian position in millimeters
+# r_deg = rotation of end effector in degrees
+# isQueued=1 = add command to Dobot’s internal command queue
+
 class RobotInterface:
     
     # Dobot Initialization
@@ -108,6 +112,8 @@ class RobotInterface:
 
     # Sleep Function
     # - - - - - - - - - - - - - - - - - - - - - - - - - -
+    # x_mm, y_mm, z_mm = Cartesian position in millimeters
+    # r_deg = rotation of end effector in degrees
     def go_to_sleep(self):
         print("[ROBOT] Going to sleep pose...")
 
@@ -122,7 +128,7 @@ class RobotInterface:
             self.api,
             dType.PTPMode.PTPMOVLXYZ,
             x_mm, y_mm, z_mm, r_deg,
-            isQueued=1
+            isQueued=1 # add command to Dobot’s internal command queue
         )
 
     # Object Tracking Movement
@@ -145,7 +151,7 @@ class RobotInterface:
             self.api,
             dType.PTPMode.PTPMOVLXYZ,
             x_mm, y_mm, z_mm, r_deg,
-            isQueued=1
+            isQueued=1 # add command to Dobot’s internal command queue
         )
 
     # Emergency Stop
