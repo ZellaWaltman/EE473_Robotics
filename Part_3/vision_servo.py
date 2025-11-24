@@ -6,6 +6,7 @@ import numpy as np
 import time
 import yaml
 import blobconverter
+import DobotDllType as dType
 from collections import deque
 
 # -------------------------------------------------------
@@ -71,40 +72,90 @@ LABEL_MAP = [
 # Robot Interface
 # ---------------------------------------------------------------------------
 class RobotInterface:
+    
+    # Dobot Initialization
+    # - - - - - - - - - - - - - - - - - - - - - - - - - -
     def __init__(self):
-        # TODO: initialize your robot here (Dobot Magician or RX-150)
-        # For example, if using Interbotix:
-        # from interbotix_xs_modules.arm import InterbotixManipulatorXS
-        # self.bot = InterbotixManipulatorXS("rx150", "arm", "gripper")
+        # Load Dobot DLL - SDK Library
+        self.api = dType.load()
+
+        # Connect to Dobot Magician ("" = auto-select first arm found, USB baud rate)
+        state = dType.ConnectDobot(self.api, "", 115200)[0]
+        if state != dType.DobotConnect.DobotConnect_NoError: # Failure to connect case
+            raise RuntimeError(f"Failed to connect to Dobot, error code: {state}")
+        print("Connected to Dobot Magician.")
+
+        # Clear command queue and start execution
+        dType.SetQueuedCmdClear(self.api)
+        dType.SetQueuedCmdStartExec(self.api)
+
+        # Set motion parameters (slow & safe for testing)
+        # velocityRatio, accelerationRatio (0–100)
+        dType.SetPTPCommonParams(self.api, 20, 20)
+
+        # Optional set coordinate / joint params:
+        # dType.SetPTPCoordinateParams(self.api, 200, 200, 200, 200)
+        # dType.SetPTPJointParams(self.api, 50, 50, 50, 50, 50, 50, 50, 50)
+
+        # Define Robot Sleep Pose
+        self.SLEEP_X = 0.20 # 20 cm in front of base
+        self.SLEEP_Y = 0.00 # centered
+        self.SLEEP_Z = 0.20 # 20 cm above table
+        self.SLEEP_R = 0.0 # end-effector rotation in degrees
+
+        # Store last commanded pose (x, y, z)
         self.last_command = None
 
+    # Sleep Function
+    # - - - - - - - - - - - - - - - - - - - - - - - - - -
     def go_to_sleep(self):
         print("[ROBOT] Going to sleep pose...")
-        # Example (Interbotix):
-        # self.bot.arm.go_to_sleep_pose(moving_time=5.0, accel_time=2.0)
-        # Example (Dobot): call Dobot API to move to safe home pose
-        pass
 
-    def point_at(self, x, y, z):
-        """
-        Command end-effector to point at (x,y,z) in robot base frame.
-        Keep orientation fixed (e.g., pointing down).
-        """
-        print(f"[ROBOT] Pointing at x={x:.3f}, y={y:.3f}, z={z:.3f}")
-        self.last_command = (x, y, z)
-        # Example (Interbotix-style):
-        # self.bot.arm.set_ee_pose_components(
-        #     x=x, y=y, z=z,
-        #     roll=0.0, pitch=1.5, yaw=0.0,
-        #     moving_time=5.0, accel_time=2.0
-        # )
-        # For Dobot: use whatever API you have to move Cartesian pose slowly
-        pass
+        # Move to sleep pose 
+        x_mm = self.SLEEP_X * 1000.0
+        y_mm = self.SLEEP_Y * 1000.0
+        z_mm = self.SLEEP_Z * 1000.0
+        r_deg = self.SLEEP_R
 
+        # Linear XYZ move to safe pose
+        dType.SetPTPCmd(
+            self.api,
+            dType.PTPMode.PTPMOVLXYZ,
+            x_mm, y_mm, z_mm, r_deg,
+            isQueued=1
+        )
+
+    # Object Tracking Movement
+    # - - - - - - - - - - - - - - - - - - - - - - - - - -
+    # Command end-effector to point at (x,y,z) in robot base frame (meters).
+    # Orientation kept fixed (pointing down) 
+    def point_at(self, x_m, y_m, z_m):
+        # Convert meters -> millimeters
+        x_mm = x_m * 1000.0
+        y_mm = y_m * 1000.0
+        z_mm = z_m * 1000.0
+        r_deg = self.SLEEP_R  # Keep the same wrist rotation
+
+        # Display issued command
+        print(f"[ROBOT] Pointing at x={x_m:.3f}, y={y_m:.3f}, z={z_m:.3f} (m)")
+        self.last_command = (x_m, y_m, z_m)
+
+        # Command smooth linear motion (x, y, z) -> object
+        dType.SetPTPCmd(
+            self.api,
+            dType.PTPMode.PTPMOVLXYZ,
+            x_mm, y_mm, z_mm, r_deg,
+            isQueued=1
+        )
+
+    # Emergency Stop
+    # - - - - - - - - - - - - - - - - - - - - - - - - - -    
     def emergency_stop(self):
-        print("[ROBOT] EMERGENCY STOP (implement as needed)")
-        # For some robots, you can call a stop / disable command here.
-        pass
+        print("EMERGENCY STOP!")
+        # Stop executing queued commands
+        dType.SetQueuedCmdStopExec(self.api)
+        # Also clear queue, or turn off servos
+        # dType.SetQueuedCmdClear(self.api)
 
 # ---------------------------------------------------------------------------
 # Load calibration: R, t (camera -> robot)
