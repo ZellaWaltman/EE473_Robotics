@@ -74,6 +74,7 @@ LABEL_MAP = [
 # x_mm, y_mm, z_mm = Cartesian position in millimeters
 # r_deg = rotation of end effector in degrees
 # isQueued=1 = add command to Dobot’s internal command queue
+# PTP Type, PTPMOVLXYZ = Linear in Cartesian XYZ (straight line)
 
 class RobotInterface:
     
@@ -126,7 +127,7 @@ class RobotInterface:
         # Linear XYZ move to safe pose
         dType.SetPTPCmd(
             self.api,
-            dType.PTPMode.PTPMOVLXYZ,
+            dType.PTPMode.PTPMOVLXYZ, # Linear in Cartesian XYZ (straight line)
             x_mm, y_mm, z_mm, r_deg,
             isQueued=1 # add command to Dobot’s internal command queue
         )
@@ -149,7 +150,7 @@ class RobotInterface:
         # Command smooth linear motion (x, y, z) -> object
         dType.SetPTPCmd(
             self.api,
-            dType.PTPMode.PTPMOVLXYZ,
+            dType.PTPMode.PTPMOVLXYZ, # Linear in Cartesian XYZ (straight line)
             x_mm, y_mm, z_mm, r_deg,
             isQueued=1 # add command to Dobot’s internal command queue
         )
