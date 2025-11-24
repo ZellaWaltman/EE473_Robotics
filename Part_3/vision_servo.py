@@ -137,7 +137,7 @@ class RobotInterface:
     # Command end-effector to point at (x,y,z) in robot base frame (meters).
     # Orientation kept fixed (pointing down) 
     def point_at(self, x_m, y_m, z_m):
-        # Convert meters -> millimeters
+        # Convert meters -> millimeters (Dobot uses mm)
         x_mm = x_m * 1000.0
         y_mm = y_m * 1000.0
         z_mm = z_m * 1000.0
