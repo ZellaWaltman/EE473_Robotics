@@ -179,6 +179,8 @@ def measure_distance(depth_frame_mm, cx, cy, roi_size=7,
 pipeline = create_pipeline()
 
 with dai.Device(pipeline) as device:
+    # Queue size = 4, will store 4 frames
+    # maxSize=4, blocking=False avoids app stalling if one stream lags; old frames drop instead
     qRgb = device.getOutputQueue("rgb", maxSize=4, blocking=False)
     qDet = device.getOutputQueue("detections", maxSize=4, blocking=False)
     qDepth = device.getOutputQueue("depth", maxSize=4, blocking=False)
