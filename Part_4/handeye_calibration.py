@@ -7,7 +7,9 @@ import time
 import yaml
 import math
 from pupil_apriltags import Detector
-import DobotDllType as dType
+from pydobot import Dobot
+from serial.tools import list_ports
+from collections import deque
 
 # -------------------------------------------------------
 # Camera intrinsics for 416x416 resolution
@@ -22,7 +24,7 @@ CY = 208.0
 # AprilTag Info
 # - - - - - - - - - - - - 
 TAG_SIZE_M = 0.038 # Tag size in meters (38mmx38mm)
-HAND_TAG_ID = 1 # Tag mounted on end-effector
+HAND_TAG_ID = 4 # Tag mounted on end-effector
 
 # .yaml Files
 # - - - - - - - - - - - - 
@@ -101,9 +103,10 @@ def load_camera_robot_calibration():
     t_cb = -R_cb @ t_cr
     T_camera_base = make_T(R_cb, t_cb)
 
-    print("[CALIB] Loaded camera->robot (camera to base) transform from YAML")
-    print("R_cr =\n", R_cr)
-    print("t_cr =", t_cr)
+    print("[CALIB] Loaded camera → robot-base transform (T_base_camera).")
+    print("R (camera→base) =\n", R_cr)
+    print("t (camera→base) =", t_cr)
+
     return T_camera_base, T_base_camera
 
 # -------------------------------------------------------
@@ -111,36 +114,33 @@ def load_camera_robot_calibration():
 # -------------------------------------------------------
 class RobotInterface:
     def __init__(self):
-        # Load Dobot DLL
-        self.api = dType.load()
+        # Auto-select Dobot serial port
+        ports = [p.device for p in list_ports.comports()
+                 if 'ttyUSB' in p.device or 'ttyACM' in p.device]
+        if not ports:
+            raise RuntimeError("No Dobot serial ports found.")
+        port = ports[0]
+        print(f"[ROBOT] Using port: {port}")
 
-        # Connect to Dobot Magician
-        state = dType.ConnectDobot(self.api, "", 115200)[0]
-        if state != dType.DobotConnect.DobotConnect_NoError:
-            raise RuntimeError(f"Failed to connect to Dobot, error code: {state}")
-        print("[ROBOT] Connected to Dobot Magician.")
+        # Connect to Dobot via pydobot
+        self.device = Dobot(port=port, verbose=False)
+        print("[ROBOT] Connected to Dobot via pydobot.")
 
-        # Clear queue and start execution
-        dType.SetQueuedCmdClear(self.api)
-        dType.SetQueuedCmdStartExec(self.api)
-
-        # You can set PTP params if you want, but here we only READ pose
-        # dType.SetPTPCommonParams(self.api, 20, 20)
-  
-    # Read End Effector Pose (Robot Base Frame)
-    # - - - - - - - - - - - - - - - - - - - - - - - - 
     def get_T_base_ee(self):
-    #  Read current end-effector pose from Dobot in robot base frame,
-    #  and convert to 4x4 transform T_base_ee. GetPose returns [x, y, z, rHead, ...] 
-    #  where x,y,z are in mm, rHead is rotation (deg) about Z.
- 
-        pose = dType.GetPose(self.api)
+        """
+        Read current end-effector pose from Dobot in robot base frame,
+        and convert to 4x4 homogeneous transform T_base_ee.
+
+        pydobot.pose() typically returns (x, y, z, r, j1, j2, j3, j4)
+        where x,y,z are in mm and r is end-effector rotation about Z in degrees.
+        """
+        pose = self.device.pose()
         x_mm, y_mm, z_mm, r_deg = pose[0], pose[1], pose[2], pose[3]
 
-        # Convert mm -> meters
+        # mm -> m
         t_be = np.array([x_mm, y_mm, z_mm], dtype=float) / 1000.0
 
-        # Approximate rotation = about Z-axis by r_deg
+        # Approximate rotation as pure yaw (about Z-axis)
         theta = math.radians(r_deg)
         c = math.cos(theta)
         s = math.sin(theta)
@@ -180,7 +180,7 @@ def create_pipeline():
 # -------------------------------------------------------
 def create_apriltag_detector():
     # Create Apriltag detector from:
-    at_detector = Detector(
+    detector = Detector(
         families="tag36h11",
         nthreads=4, # 4 CPU threads for detections
         quad_decimate=2.0, # Downsample image by 2 for speed
@@ -274,6 +274,118 @@ def compute_errors(T_camera_base, T_base_ee_list, T_camera_tag_list, T_ee_tag):
     }
 
     return stats
+
+# -------------------------------------------------------
+# MAIN: Hand-eye calibration & realtime tracking
+# -------------------------------------------------------
+def log_SO3(R):
+    """
+    Log map from SO(3) -> so(3) (axis-angle as 3-vector).
+    Returns a 3D vector omega such that exp(omega^) = R.
+    """
+    trace = np.trace(R)
+    cos_theta = (trace - 1.0) / 2.0
+    cos_theta = max(-1.0, min(1.0, cos_theta))  # clamp for numerical safety
+    theta = math.acos(cos_theta)
+
+    if abs(theta) < 1e-8:
+        # Very small rotation -> approx zero
+        return np.zeros(3, dtype=float)
+
+    # Skew-symmetric part
+    wx = R[2, 1] - R[1, 2]
+    wy = R[0, 2] - R[2, 0]
+    wz = R[1, 0] - R[0, 1]
+    axis = np.array([wx, wy, wz], dtype=float) / (2.0 * math.sin(theta))
+
+    # Axis-angle vector: theta * axis
+    return theta * axis
+
+
+def solve_handeye_AX_XB(T_base_ee_list, T_camera_tag_list):
+    """
+    AX = X B solver (Park–Martin style) to estimate X = T_ee_tag.
+
+    We follow the assignment's definitions:
+
+        A_i = T_base_ee[i]^{-1} * T_base_ee[i+1]
+        B_i = T_camera_tag[i] * T_camera_tag[i+1]^{-1]
+
+    and solve A_i * X = X * B_i for X (4x4 homogeneous).
+    """
+    n = len(T_base_ee_list)
+    if n < 2:
+        raise ValueError("Need at least 2 poses to form relative motions (A_i, B_i).")
+
+    # ------------------------------------------------------------------
+    # Build relative motions A_i, B_i
+    # ------------------------------------------------------------------
+    A_list = []
+    B_list = []
+    for i in range(n - 1):
+        T_b_e_i = T_base_ee_list[i]
+        T_b_e_j = T_base_ee_list[i + 1]
+        A = invert_T(T_b_e_i) @ T_b_e_j   # base frame EE motion
+        A_list.append(A)
+
+        T_c_t_i = T_camera_tag_list[i]
+        T_c_t_j = T_camera_tag_list[i + 1]
+        B = invert_T(T_c_t_i) @ T_c_t_j   # camera frame tag motion
+        B_list.append(B)
+
+    # ------------------------------------------------------------------
+    # 1) Solve rotation part R_X using Park–Martin method
+    # ------------------------------------------------------------------
+    a_vecs = []
+    b_vecs = []
+    for A, B in zip(A_list, B_list):
+        R_A = A[:3, :3]
+        R_B = B[:3, :3]
+        a_vecs.append(log_SO3(R_A))
+        b_vecs.append(log_SO3(R_B))
+
+    # We want R_X such that a_i ≈ R_X * b_i  (least-squares Wahba problem)
+    M = np.zeros((3, 3), dtype=float)
+    for a, b in zip(a_vecs, b_vecs):
+        M += np.outer(a, b)
+
+    U, S, Vt = np.linalg.svd(M)
+    R_X = U @ Vt
+    if np.linalg.det(R_X) < 0:
+        # Fix possible reflection
+        Vt[-1, :] *= -1.0
+        R_X = U @ Vt
+
+    # ------------------------------------------------------------------
+    # 2) Solve translation part t_X from:
+    #    A_i X = X B_i
+    #
+    #    => R_Ai t_X + t_Ai = R_X t_Bi + t_X
+    #    => (R_Ai - I) t_X = R_X t_Bi - t_Ai
+    # ------------------------------------------------------------------
+    C_rows = []
+    d_rows = []
+    I = np.eye(3, dtype=float)
+
+    for A, B in zip(A_list, B_list):
+        R_A = A[:3, :3]
+        t_A = A[:3, 3]
+        R_B = B[:3, :3]
+        t_B = B[:3, 3]
+
+        C_rows.append(R_A - I)
+        d_rows.append(R_X @ t_B - t_A)
+
+    C = np.vstack(C_rows)           # shape (3 * (n-1), 3)
+    d = np.vstack(d_rows).reshape(-1)  # shape (3 * (n-1),)
+
+    # Least-squares solve for t_X
+    t_X, *_ = np.linalg.lstsq(C, d, rcond=None)
+    t_X = t_X.reshape(3)
+
+    # Final X = T_ee_tag
+    T_ee_tag = make_T(R_X, t_X)
+    return T_ee_tag
 
 # -------------------------------------------------------
 # MAIN: Hand-eye calibration & realtime tracking
@@ -406,16 +518,7 @@ def main():
         # ----------------------------------------------------------------
         print("[INFO] Computing hand-eye transform T_ee_tag via averaging...")
 
-        for T_b_e, T_c_t in zip(T_base_ee_list, T_camera_tag_list):
-            # Camera -> EE from FK: T_c_e = T_c_b * T_b_e
-            T_c_e = T_camera_base @ T_b_e
-
-            # From T_c_t = T_c_e * T_e_t =>
-            # T_e_t = T_c_e^{-1} * T_c_t
-            T_e_t_i = invert_T(T_c_e) @ T_c_t
-            T_ee_tag_samples.append(T_e_t_i)
-
-        T_ee_tag = average_transform(T_ee_tag_samples)
+        T_ee_tag = solve_handeye_AX_XB(T_base_ee_list, T_camera_tag_list)
 
         R_ee_tag = T_ee_tag[:3, :3]
         t_ee_tag = T_ee_tag[:3, 3]
