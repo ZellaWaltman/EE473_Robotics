@@ -528,7 +528,34 @@ def main():
             T_ee_tag_samples.append(T_e_t_i)
 
         # Average over all samples (SVD on rotations + mean of translations)
-        T_ee_tag = average_transform(T_ee_tag_samples)
+        # First averaging pass
+        T_ee_tag_initial = average_transform(T_ee_tag_samples)
+        
+        # Compute residuals for each sample (how far each T_e_t_i is from the initial average)
+        errors_mm = []
+        for T_e_t_i in T_ee_tag_samples:
+            T_diff = invert_T(T_ee_tag_initial) @ T_e_t_i   # relative transform
+            t_diff = T_diff[:3, 3]                          # translation part
+            e_mm = np.linalg.norm(t_diff) * 1000.0          # residual error in mm
+            errors_mm.append(e_mm)
+        
+        errors_mm = np.array(errors_mm)
+        mean_e = errors_mm.mean()
+        std_e = errors_mm.std()
+        
+        print(f"[DEBUG] Initial per-sample residuals (mm): {errors_mm}")
+        print(f"[DEBUG] Mean={mean_e:.2f} mm  Std={std_e:.2f} mm")
+        
+        # Filter out outliers: keep samples within 2 std deviations of mean
+        filtered_samples = [
+            T for T, e in zip(T_ee_tag_samples, errors_mm)
+            if e <= mean_e + 2*std_e
+        ]
+        
+        print(f"[INFO] Keeping {len(filtered_samples)} / {len(T_ee_tag_samples)} samples after filtering.")
+        
+        # Final averaged transform (more robust)
+        T_ee_tag = average_transform(filtered_samples)
 
         R_ee_tag = T_ee_tag[:3, :3]
         t_ee_tag = T_ee_tag[:3, 3]
