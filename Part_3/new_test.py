@@ -41,7 +41,7 @@ ALPHA = 0.3
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 REACH_MIN = 0.15 # min radius from base (avoid EE getting too close)
 REACH_MAX = 0.30 # max reach (Arm has ~0.32 cm reach)
-Z_MIN = 0.05 # 5 cm above table
+Z_MIN = 0.01 # 5 cm above table
 Z_MAX = 0.175 # 17.5 cm above table
 
 # Target YOLO classes (COCO names) and key bindings
@@ -128,9 +128,14 @@ class RobotInterface:
     # Orientation kept fixed (pointing down) 
   
     def point_at(self, x_m, y_m, z_m):
-        print(f"[ROBOT] Pointing at {x_m:.3f}, {y_m:.3f}, {z_m:.3f}")
+        x_mm = x_m * 1000
+        y_mm = y_m * 1000
+        z_mm = z_m * 1000
+        print(f"[ROBOT] meters: ({x_m:.3f}, {y_m:.3f}, {z_m:.3f}) -> "
+              f"mm: ({x_mm:.1f}, {y_mm:.1f}, {z_mm:.1f})")
+
         self.last_command = (x_m, y_m, z_m)
-        self.device.move_to(x_m * 1000, y_m * 1000, z_m * 1000, self.SLEEP_R)
+        self.device.move_to(x_mm, y_mm, z_mm, self.SLEEP_R, wait=False)
 
     # Emergency Stop
     # - - - - - - - - - - - - - - - - - - - - - - - - - -    
@@ -235,7 +240,7 @@ def create_pipeline():
 
     # Stereo Depth
     stereo = pipeline.createStereoDepth()
-    stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.HIGH_DENSITY)
+    stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.DEFAULT)
     stereo.setSubpixel(True)
     stereo.setLeftRightCheck(True)
     stereo.setExtendedDisparity(False)
@@ -577,3 +582,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
