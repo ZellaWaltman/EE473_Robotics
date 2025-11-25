@@ -513,7 +513,7 @@ def main():
             print("[ERROR] Not enough samples collected for hand-eye calibration.")
             return
 
-        # ----------------------------------------------------------------
+                # ----------------------------------------------------------------
         # Phase 2: Solve for T_ee_tag using OpenCV calibrateHandEye (PARK)
         # ----------------------------------------------------------------
         print("[INFO] Solving hand-eye using OpenCV calibrateHandEye (PARK method)...")
@@ -526,16 +526,20 @@ def main():
         for T_b_e, T_c_t in zip(T_base_ee_list, T_camera_tag_list):
             # gripper2base = (base->ee)^(-1)
             T_e_b = invert_T(T_b_e)
-            R_gripper2base.append(T_e_b[:3, :3])
-            t_gripper2base.append(T_e_b[:3, 3])
+            R_g2b = T_e_b[:3, :3].astype(np.float64)
+            t_g2b = T_e_b[:3, 3].reshape(3, 1).astype(np.float64)
+            R_gripper2base.append(R_g2b)
+            t_gripper2base.append(t_g2b)
 
             # target2cam = (camera->tag)^(-1)
             T_t_c = invert_T(T_c_t)
-            R_target2cam.append(T_t_c[:3, :3])
-            t_target2cam.append(T_t_c[:3, 3])
+            R_t2c = T_t_c[:3, :3].astype(np.float64)
+            t_t2c = T_t_c[:3, 3].reshape(3, 1).astype(np.float64)
+            R_target2cam.append(R_t2c)
+            t_target2cam.append(t_t2c)
 
         # OpenCV returns rotation & translation for X in AX = X B
-        # Here X corresponds to the end-effector->tag transform.
+        # Here X is the end-effector -> tag transform.
         R_ee_tag, t_ee_tag = cv2.calibrateHandEye(
             R_gripper2base,
             t_gripper2base,
@@ -544,10 +548,15 @@ def main():
             method=cv2.CALIB_HAND_EYE_PARK
         )
 
-        T_ee_tag = make_T(np.array(R_ee_tag), np.array(t_ee_tag))
+        R_ee_tag = np.array(R_ee_tag, dtype=float)
+        t_ee_tag = np.array(t_ee_tag, dtype=float).reshape(3)
 
-        R_ee_tag = T_ee_tag[:3, :3]
-        t_ee_tag = T_ee_tag[:3, 3]
+        T_ee_tag = make_T(R_ee_tag, t_ee_tag)
+
+        # NaN guard: if the solve failed, bail before tracking
+        if np.isnan(T_ee_tag).any():
+            print("[ERROR] T_ee_tag contains NaNs — hand-eye calibration failed.")
+            return
 
         print("[INFO] Estimated T_ee_tag (end-effector -> tag):")
         print("R_ee_tag =\n", R_ee_tag)
