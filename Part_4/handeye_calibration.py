@@ -514,11 +514,37 @@ def main():
             return
 
         # ----------------------------------------------------------------
-        # Phase 2: Solve for T_ee_tag by averaging
+        # Phase 2: Solve for T_ee_tag using OpenCV calibrateHandEye (PARK)
         # ----------------------------------------------------------------
-        print("[INFO] Computing hand-eye transform T_ee_tag via averaging...")
+        print("[INFO] Solving hand-eye using OpenCV calibrateHandEye (PARK method)...")
 
-        T_ee_tag = solve_handeye_AX_XB(T_base_ee_list, T_camera_tag_list)
+        R_gripper2base = []
+        t_gripper2base = []
+        R_target2cam = []
+        t_target2cam = []
+
+        for T_b_e, T_c_t in zip(T_base_ee_list, T_camera_tag_list):
+            # gripper2base = (base->ee)^(-1)
+            T_e_b = invert_T(T_b_e)
+            R_gripper2base.append(T_e_b[:3, :3])
+            t_gripper2base.append(T_e_b[:3, 3])
+
+            # target2cam = (camera->tag)^(-1)
+            T_t_c = invert_T(T_c_t)
+            R_target2cam.append(T_t_c[:3, :3])
+            t_target2cam.append(T_t_c[:3, 3])
+
+        # OpenCV returns rotation & translation for X in AX = X B
+        # Here X corresponds to the end-effector->tag transform.
+        R_ee_tag, t_ee_tag = cv2.calibrateHandEye(
+            R_gripper2base,
+            t_gripper2base,
+            R_target2cam,
+            t_target2cam,
+            method=cv2.CALIB_HAND_EYE_PARK
+        )
+
+        T_ee_tag = make_T(np.array(R_ee_tag), np.array(t_ee_tag))
 
         R_ee_tag = T_ee_tag[:3, :3]
         t_ee_tag = T_ee_tag[:3, 3]
