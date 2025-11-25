@@ -349,6 +349,22 @@ def clamp_workspace(P_robot):
     # Return a safe robot-frame position
     return np.array([x, y, z], dtype=float)
 
+
+# -------------------------------------------------------
+# Display Text
+# -------------------------------------------------------
+def put_text_outline(img, text, org,
+                     font=cv2.FONT_HERSHEY_SIMPLEX,
+                     font_scale=0.5,
+                     color=(255, 255, 255),
+                     thickness=1):
+    # Black outline
+    cv2.putText(img, text, org, font, font_scale,
+                (0, 0, 0), thickness + 2, cv2.LINE_AA)
+    # Main colored text
+    cv2.putText(img, text, org, font, font_scale,
+                color, thickness, cv2.LINE_AA)
+
 # ---------------------------------------------------------------------------
 # Main visual servoing loop
 # ---------------------------------------------------------------------------
@@ -529,14 +545,8 @@ def main():
 
 
                         # Show 3D Robot position on frame
-                        pos_text = (
-                            f"Robot XYZ: ({P_smooth[0]:.3f}, "
-                            f"{P_smooth[1]:.3f}, {P_smooth[2]:.3f}) m"
-                        )
-                        cv2.putText(
-                            frame, pos_text, (10, h_rgb - 40),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1
-                        )
+                        put_text_outline(frame, f"Robot XYZ: ({P_smooth[0]:.3f}, {P_smooth[1]:.3f}, {P_smooth[2]:.3f}) m", 
+                                      (10, h_rgb - 20), font_scale=0.5, color=(0,255,255))
                     else:
                         print(f"[WARN] Rejecting P_robot with bad Z: {P_robot}")
 
@@ -550,22 +560,23 @@ def main():
 
             # Status overlays
             # - - - - - - - - - - - - - - - - - - - - - -
-            status_text = f"FPS: {fps:.1f}"
-            cv2.putText(frame, status_text, (10, 20),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            put_text_outline(frame, f"FPS: {fps:.1f}",
+                 (10, 25), font_scale=0.6, color=(255,255,255), thickness=2)
 
-            track_text = f"Tracking: {'ON' if tracking_enabled else 'OFF'}"
-            cv2.putText(frame, track_text, (10, 45),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                        (0, 255, 0) if tracking_enabled else (0, 0, 255), 1)
+            put_text_outline(frame, f"Tracking: {'ON' if tracking_enabled else 'OFF'}",
+                 (10, 55), font_scale=0.5, color=(0,255,0) if tracking_enabled else (0,0,255))
 
-            target_text = f"Target: {current_target_class}"
-            cv2.putText(frame, target_text, (10, 65),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+            put_text_outline(frame,
+                 f"Target: {current_target_class}",
+                 (10, 85),
+                 font_scale=0.5,
+                 color=(0,255,255))
 
-            depth_text = f"Depth: {depth_str}"
-            cv2.putText(frame, depth_text, (10, 85),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+            put_text_outline(frame,
+                 f"Depth: {depth_str}",
+                 (10, 115),
+                 font_scale=0.5,
+                 color=(0,255,255))
             
             # Display annotated frame
             cv2.imshow("visual_servo", frame)
