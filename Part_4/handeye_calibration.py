@@ -815,20 +815,6 @@ def main():
                 )
                 put_text_outline(
                     frame,
-                    f"FK EE XYZ (m):     ({t_fk[0]:.3f}, {t_fk[1]:.3f}, {t_fk[2]:.3f})",
-                    (10, base_y + 2 * line_dy),
-                    font_scale=0.5,
-                    color=(200, 200, 200)
-                )
-                put_text_outline(
-                    frame,
-                    f"FK RPY (deg):      ({rpy_fk_deg[0]:.1f}, {rpy_fk_deg[1]:.1f}, {rpy_fk_deg[2]:.1f})",
-                    (10, base_y + 3 * line_dy),
-                    font_scale=0.5,
-                    color=(200, 200, 200)
-                )
-                put_text_outline(
-                    frame,
                     f"Vision vs FK: pos={pos_err_mm:.1f} mm, ang={ang_err_deg:.2f} deg",
                     (10, base_y + 4 * line_dy),
                     font_scale=0.5,
