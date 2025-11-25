@@ -125,6 +125,21 @@ def create_pipeline():
     return pipeline
 
 
+# -------------------------------------------------------
+# Display Text
+# -------------------------------------------------------
+def put_text_outline(img, text, org,
+                     font=cv2.FONT_HERSHEY_SIMPLEX,
+                     font_scale=0.5,
+                     color=(255, 255, 255),
+                     thickness=1):
+    # Black outline
+    cv2.putText(img, text, org, font, font_scale,
+                (0, 0, 0), thickness + 2, cv2.LINE_AA)
+    # Main colored text
+    cv2.putText(img, text, org, font, font_scale,
+                color, thickness, cv2.LINE_AA)
+
 # ---------------- Main calibration routine -----------------------------------
 def main():
     tag_positions_robot = load_tag_positions_robot()
@@ -204,14 +219,13 @@ def main():
 
             for tid in TAG_IDS:
                 n = len(samples_cam[tid])
-                txt = f"Tag {tid}: {n}/{SAMPLES_PER_TAG}"
 
-                cv2.putText(frame, txt, (10, y0),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+                put_text_outline(frame, f"Tag {tid}: {n}/{SAMPLES_PER_TAG}", (10, y0),
+                        font_scale=0.6, color=(255, 255, 0), thickness=2)
                 y0 += line_height
 
-            cv2.putText(frame, f"FPS: {fps:.1f}", (x, y),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                put_text_outline(frame, f"FPS: {fps:.1f}", (x, y),
+                        font_scale=0.7, color=(0, 0, 255), thickness=2)
 
             cv2.imshow("calibration_collection", frame)
 
