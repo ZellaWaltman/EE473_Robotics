@@ -90,6 +90,21 @@ def error_to_color(err_mm: float):
         return (0, 0, 255)      # red
 
 # -------------------------------------------------------
+# Display Text
+# -------------------------------------------------------
+def put_text_outline(img, text, org,
+                     font=cv2.FONT_HERSHEY_SIMPLEX,
+                     font_scale=0.5,
+                     color=(255, 255, 255),
+                     thickness=1):
+    # Black outline
+    cv2.putText(img, text, org, font, font_scale,
+                (0, 0, 0), thickness + 2, cv2.LINE_AA)
+    # Main colored text
+    cv2.putText(img, text, org, font, font_scale,
+                color, thickness, cv2.LINE_AA)
+
+# -------------------------------------------------------
 # Main
 # -------------------------------------------------------
 def main():
@@ -180,14 +195,36 @@ def main():
                 mean_err = float('nan')
                 max_err = float('nan')
 
-            # Show stats at top-left
-            cv2.putText(frame, f"FPS: {fps:.1f}", (10, 20),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-
-            cv2.putText(frame, f"Mean err: {mean_err:.1f} mm", (10, 45),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
-            cv2.putText(frame, f"Max err:  {max_err:.1f} mm", (10, 65),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+            # --- Show stats at bottom-right with outlined text ---
+            h, w = frame.shape[:2]
+            
+            lines = [
+                f"FPS: {fps:.1f}",
+                f"Mean err: {mean_err:.1f} mm",
+                f"Max err:  {max_err:.1f} mm",
+            ]
+            
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.5
+            thickness = 1
+            line_spacing = 4
+            
+            # Compute common line height
+            _, text_size = cv2.getTextSize(lines[0], font, font_scale, thickness)
+            line_height = text_size[1] + line_spacing
+            
+            y = h - 10  # start a bit above bottom edge
+            
+            # Draw from bottom to top so the block is tight to the bottom-right corner
+            for text in reversed(lines):
+                (tw, th), _ = cv2.getTextSize(text, font, font_scale, thickness)
+                x = w - tw - 10  # 10 px from right edge
+            
+                color = (255, 255, 255)  # white text; outline makes it visible
+                put_text_outline(frame, text, (x, y),
+                                 font=font, font_scale=font_scale,
+                                 color=color, thickness=thickness)
+                y -= line_height
 
             cv2.imshow("calibration_auto_check", frame)
 
