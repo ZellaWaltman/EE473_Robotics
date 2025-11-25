@@ -450,6 +450,7 @@ def main():
                         best_det = (cx_rgb, cy_rgb, conf)
 
             # Initialize variables for debugging/overlay
+                        # Initialize variables for debugging/overlay
             P_robot_target = None
             depth_str = "N/A"
 
@@ -464,41 +465,59 @@ def main():
                 # Depth in meters (using RoI)
                 depth_m = measure_distance(depth_frame, cx_depth, cy_depth, roi_size=9)
 
-                # Valid depth -> display as string
-                if depth_m is not None:
+                valid_3d = False
+                if depth_m is None:
+                    depth_str = "N/A"
+                else:
                     depth_str = f"{depth_m:.2f} m"
+                    # Use reasonable depth band; adjust if needed
+                    if DEPTH_MIN_M <= depth_m <= DEPTH_MAX_M:
+                        valid_3d = True
+                    else:
+                        depth_str = f"{depth_m:.2f} m (out of range)"
 
+                if valid_3d:
                     # Pinhole model: camera frame coordinates
-                    # (u - cx) * Z / fx, (v - cy) * Z / fy
                     X_cam = (cx_rgb - CX) * depth_m / FX
                     Y_cam = (cy_rgb - CY) * depth_m / FY
                     Z_cam = depth_m
 
                     # Build 3D vector in camera frame
                     P_cam = np.array([X_cam, Y_cam, Z_cam], dtype=float)
-                    P_robot = camera_to_robot(P_cam, R, t) # Camera Frame -> Robot Frame
 
-                    # Workspace Limiting
-                    P_robot = clamp_workspace(P_robot)
-                    P_robot_target = P_robot
+                    # Camera -> robot frame
+                    P_robot = camera_to_robot(P_cam, R, t)
 
-                    # Exponential Smoothing - Reduce Jitter
-                    if P_smooth is None:
-                        P_smooth = P_robot
-                    else:
-                        P_smooth = ALPHA * P_robot + (1.0 - ALPHA) * P_smooth
+                    # Optional sanity check on Z to avoid crazy values
+                    if -0.05 < P_robot[2] < 0.40:
+                        # Workspace Limiting
+                        P_robot = clamp_workspace(P_robot)
+                        P_robot_target = P_robot
+
+                        # Exponential Smoothing - Reduce Jitter
+                        if P_smooth is None:
+                            P_smooth = P_robot
+                        else:
+                            P_smooth = ALPHA * P_robot + (1.0 - ALPHA) * P_smooth
                         
-                    # Update time when target was last seen
-                    last_target_time = time.time()
+                        # Update time when target was last seen
+                        last_target_time = time.time()
 
-                    # If tracking enabled, send smoothed position to robot
-                    if tracking_enabled:
-                        robot.point_at(P_smooth[0], P_smooth[1], P_smooth[2])
+                        # If tracking enabled, send smoothed position to robot
+                        if tracking_enabled:
+                            robot.point_at(P_smooth[0], P_smooth[1], P_smooth[2])
 
-                    # Show 3D Robot position on frame
-                    pos_text = f"Robot XYZ: ({P_smooth[0]:.3f}, {P_smooth[1]:.3f}, {P_smooth[2]:.3f}) m"
-                    cv2.putText(frame, pos_text, (10, h_rgb - 40),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+                        # Show 3D Robot position on frame
+                        pos_text = (
+                            f"Robot XYZ: ({P_smooth[0]:.3f}, "
+                            f"{P_smooth[1]:.3f}, {P_smooth[2]:.3f}) m"
+                        )
+                        cv2.putText(
+                            frame, pos_text, (10, h_rgb - 40),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1
+                        )
+                    else:
+                        print(f"[WARN] Rejecting P_robot with bad Z: {P_robot}")
 
             # If no target for a while and tracking is on -> go to sleep
             now = time.time()
