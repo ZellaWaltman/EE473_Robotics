@@ -155,9 +155,9 @@ def load_camera_robot_calibration():
     t_cb = -R_cb @ t_cr
     T_camera_base = make_T(R_cb, t_cb)
 
-    print("[CALIB] Loaded camera → robot-base transform (T_base_camera).")
-    print("R (camera→base) =\n", R_cr)
-    print("t (camera→base) =", t_cr)
+    print("[CALIB] Loaded camera -> robot-base transform (T_base_camera).")
+    print("R (camera -> base) =\n", R_cr)
+    print("t (camera -> base) =", t_cr)
 
     return T_camera_base, T_base_camera
 
