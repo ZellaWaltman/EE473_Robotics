@@ -144,6 +144,12 @@ class RobotInterface:
         with self._lock:
             self._target = (x_m, y_m, z_m)
 
+    def get_current_pose_m(self):
+        """Return current end-effector pose from Dobot as (x,y,z) in meters."""
+        pose = self.device.pose()  # (x_mm, y_mm, z_mm, r, j1, j2, j3, j4)
+        x_mm, y_mm, z_mm = pose[0], pose[1], pose[2]
+        return np.array([x_mm, y_mm, z_mm], dtype=float) / 1000.0
+
     def go_to_sleep(self):
         print("[ROBOT] Going to sleep pose...")
         self.device.move_to(200.0, 0.0, 100.0, 0.0, wait=True)
@@ -372,6 +378,14 @@ def main():
     # Load calibration
     R, t = load_calibration()
 
+    # -----------------------------
+    # Performance metrics storage
+    # -----------------------------
+    tracking_errors_mm = []     # Euclidean error between target (commanded) and actual pose
+    frames_tracking = 0         # number of frames while tracking is enabled
+    frames_with_valid_target = 0  # frames where a valid 3D target was available
+    commanded_positions = []    # list of commanded robot XYZ (workspace coverage)
+
     # Initialize robot interface
     robot = RobotInterface()
     robot.go_to_sleep()
@@ -558,6 +572,25 @@ def main():
                 robot.go_to_sleep()
                 P_smooth = None
 
+            # --------------------------------------
+            # Metrics: success rate & tracking error
+            # --------------------------------------
+            if tracking_enabled:
+                frames_tracking += 1
+
+                # Success = we have a valid 3D target inside workspace this frame
+                if P_robot_target is not None:
+                    frames_with_valid_target += 1
+
+                    # Log commanded position (for workspace coverage analysis)
+                    commanded_positions.append(P_robot_target.copy())
+
+                # Tracking accuracy: compare actual EE pose vs smoothed command
+                if P_smooth is not None:
+                    P_actual = robot.get_current_pose_m()  # FK from Dobot encoders
+                    err_m = np.linalg.norm(P_smooth - P_actual)
+                    tracking_errors_mm.append(err_m * 1000.0)  # store in mm
+
             # Status overlays
             # - - - - - - - - - - - - - - - - - - - - - -
             put_text_outline(frame, f"FPS: {fps:.1f}",
@@ -608,6 +641,59 @@ def main():
 
         # Close OpenCV windows after breaking from loop
         cv2.destroyAllWindows()
+
+        # --------------------------------------
+        # Final performance report
+        # --------------------------------------
+        print("\n========== PERFORMANCE SUMMARY ==========")
+
+        total_time = time.time() - t0
+        avg_fps = frame_count / total_time if total_time > 0 else 0.0
+        print(f"Total frames: {frame_count}")
+        print(f"Elapsed time: {total_time:.2f} s")
+        print(f"Average FPS:  {avg_fps:.2f}")
+
+        # Tracking accuracy stats
+        if tracking_errors_mm:
+            errs = np.array(tracking_errors_mm, dtype=float)
+            print("\nTracking accuracy (commanded vs actual EE position):")
+            print(f"  Mean error: {errs.mean():.1f} mm")
+            print(f"  Std  error: {errs.std():.1f} mm")
+            print(f"  Max  error: {errs.max():.1f} mm")
+            # Optional: save for post-processing
+            np.save("tracking_errors_mm.npy", errs)
+        else:
+            print("\nNo tracking errors recorded (tracking may never have been enabled).")
+
+        # Success rate
+        if frames_tracking > 0:
+            success_rate = frames_with_valid_target / frames_tracking
+            print("\nSuccess rate (frames with valid target while tracking enabled):")
+            print(f"  Success frames: {frames_with_valid_target}")
+            print(f"  Tracking frames: {frames_tracking}")
+            print(f"  Success rate: {success_rate*100:.1f}%")
+        else:
+            print("\nNo frames with tracking enabled; success rate not defined.")
+
+        # Workspace coverage
+        if commanded_positions:
+            cp = np.vstack(commanded_positions)  # shape (N, 3)
+            print("\nWorkspace coverage (commanded positions in robot frame, meters):")
+            print(f"  Number of commanded positions: {cp.shape[0]}")
+
+            # Quick bounding box of where you went
+            xyz_min = cp.min(axis=0)
+            xyz_max = cp.max(axis=0)
+            print(f"  X range: {xyz_min[0]:.3f} m to {xyz_max[0]:.3f} m")
+            print(f"  Y range: {xyz_min[1]:.3f} m to {xyz_max[1]:.3f} m")
+            print(f"  Z range: {xyz_min[2]:.3f} m to {xyz_max[2]:.3f} m")
+
+            # Optional: save positions for plotting later
+            np.save("commanded_positions_m.npy", cp)
+        else:
+            print("\nNo commanded positions recorded (no valid 3D targets?).")
+
+        print("=========================================\n")
 
 if __name__ == "__main__":
     main()
