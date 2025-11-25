@@ -610,55 +610,106 @@ def main():
                 return
 
             # ----------------------------------------------------------------
-            # Phase 2: Solve for T_ee_tag via per-sample estimation + averaging
+            # Phase 2: Solve for hand-eye using OpenCV AX = XB
             # ----------------------------------------------------------------
-            print("[INFO] Computing hand-eye transform T_ee_tag via per-sample method...")
-
+            print("[INFO] Computing hand-eye transform using OpenCV calibrateHandEye (AX = XB, PARK)...")
+    
+            # --- Build inputs for OpenCV calibrateHandEye ---
+            # OpenCV expects:
+            #   R_gripper2base[i], t_gripper2base[i]: transform from gripper (EE) -> base
+            #   R_target2cam[i],   t_target2cam[i]:   transform from target (tag)  -> camera
+            #
+            # We currently have:
+            #   T_base_ee_list[i]   = base -> ee
+            #   T_camera_tag_list[i]= camera -> tag
+            # So we invert each to get what OpenCV wants.
+            R_gripper2base = []
+            t_gripper2base = []
+            R_target2cam   = []
+            t_target2cam   = []
+    
+            for T_b_e, T_c_t in zip(T_base_ee_list, T_camera_tag_list):
+                # gripper (ee) -> base
+                T_e_b = invert_T(T_b_e)
+                R_g2b = T_e_b[:3, :3]
+                t_g2b = T_e_b[:3, 3]
+    
+                # target (tag) -> camera
+                T_t_c = invert_T(T_c_t)
+                R_t2c = T_t_c[:3, :3]
+                t_t2c = T_t_c[:3, 3]
+    
+                R_gripper2base.append(R_g2b)
+                t_gripper2base.append(t_g2b.reshape(3, 1))
+                R_target2cam.append(R_t2c)
+                t_target2cam.append(t_t2c.reshape(3, 1))
+    
+            # Call OpenCV hand-eye calibration
+            # Method = PARK (Park–Martin) as recommended
+            R_cam2gripper, t_cam2gripper = cv2.calibrateHandEye(
+                R_gripper2base, t_gripper2base,
+                R_target2cam,   t_target2cam,
+                method=cv2.CALIB_HAND_EYE_PARK
+            )
+    
+            # This gives the transform from camera -> gripper (EE)
+            T_cam_ee_cv = make_T(R_cam2gripper, t_cam2gripper.flatten())
+            print("[INFO] OpenCV hand-eye result (camera -> EE):")
+            print("R_cam2gripper =\n", R_cam2gripper)
+            print("t_cam2gripper (m) =", t_cam2gripper.flatten())
+    
+            # -------------------------------------------------------
+            # Now compute T_ee_tag the same way as before
+            # (per-sample T_e_t + averaging + outlier filtering)
+            # so your existing downstream code still works.
+            # -------------------------------------------------------
+            print("[INFO] Computing T_ee_tag via per-sample estimation + averaging...")
+    
             T_ee_tag_samples = []
             for T_b_e, T_c_t in zip(T_base_ee_list, T_camera_tag_list):
-                # Camera -> EE from FK: T_c_e = T_camera_base * T_base_ee
+                # Camera -> EE from FK chain
                 T_c_e = T_camera_base @ T_b_e
-
+    
                 # From T_c_t = T_c_e * T_e_t  =>  T_e_t = T_c_e^{-1} * T_c_t
                 T_e_t_i = invert_T(T_c_e) @ T_c_t
                 T_ee_tag_samples.append(T_e_t_i)
-
+    
             # Average over all samples (SVD on rotations + mean of translations)
             T_ee_tag_initial = average_transform(T_ee_tag_samples)
-
-            # Compute residuals for each sample
+    
+            # Compute residuals for outlier detection
             errors_mm = []
             for T_e_t_i in T_ee_tag_samples:
                 T_diff = invert_T(T_ee_tag_initial) @ T_e_t_i
                 t_diff = T_diff[:3, 3]
                 e_mm = np.linalg.norm(t_diff) * 1000.0
                 errors_mm.append(e_mm)
-
+    
             errors_mm = np.array(errors_mm)
             mean_e = errors_mm.mean()
-            std_e = errors_mm.std()
-
+            std_e  = errors_mm.std()
+    
             print(f"[DEBUG] Initial per-sample residuals (mm): {errors_mm}")
             print(f"[DEBUG] Mean={mean_e:.2f} mm  Std={std_e:.2f} mm")
-
-            # Filter out outliers: keep samples within 2 std deviations of mean
+    
+            # Filter out outliers (2σ)
             filtered_samples = [
                 T for T, e in zip(T_ee_tag_samples, errors_mm)
                 if e <= mean_e + 2 * std_e
             ]
-
+    
             print(f"[INFO] Keeping {len(filtered_samples)} / {len(T_ee_tag_samples)} samples after filtering.")
-
-            # Final averaged transform (more robust)
+    
+            # Final averaged transform (more robust) -> T_ee_tag
             T_ee_tag = average_transform(filtered_samples)
-
+    
             R_ee_tag = T_ee_tag[:3, :3]
             t_ee_tag = T_ee_tag[:3, 3]
-
-            print("[INFO] Estimated T_ee_tag (end-effector -> tag):")
+    
+            print("[INFO] Estimated T_ee_tag (end-effector -> tag) from averaging:")
             print("R_ee_tag =\n", R_ee_tag)
             print("t_ee_tag (m) =", t_ee_tag)
-
+    
             # Euler angles of tag frame w.r.t EE frame
             roll, pitch, yaw = rot_to_euler_rpy(R_ee_tag)
             roll_deg, pitch_deg, yaw_deg = np.degrees([roll, pitch, yaw])
