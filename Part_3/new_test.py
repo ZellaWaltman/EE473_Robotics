@@ -56,6 +56,8 @@ CONF_THRESH = 0.45
 # Timeout for lost target (seconds)
 TARGET_LOST_TIMEOUT = 3.0
 
+CONTROL_PERIOD = 0.2  # seconds between robot commands (~5 Hz), tune as you like
+
 # COCO labels (80 classes)
 # ----------------------------------------------------
 LABEL_MAP = [
@@ -95,6 +97,9 @@ class RobotInterface:
 
         # pick first port automatically (same behavior as previous code auto-connect)
         self.device = Dobot(port=port, verbose=False)
+
+        # Set speed & initialize rate limiting
+        self.device.speed(velocity=150, acceleration=150)
         
         curr_pos = self.device.pose()
         print(f"Connected to Dobot on {port}")
@@ -108,6 +113,11 @@ class RobotInterface:
 
         # Store last commanded pose (x, y, z)
         self.last_command = None
+        
+        # Rate-limiting parameters for point_at()
+        self.last_send_time = 0.0   # time.time() of last command
+        self.min_send_dt = 0.0      # minimum time between commands (s)
+        self.min_move_m = 0.01     # minimum movement (m) ≈ 5 mm
 
     # Sleep Function
     # - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -128,9 +138,19 @@ class RobotInterface:
     # Orientation kept fixed (pointing down) 
   
     def point_at(self, x_m, y_m, z_m):
-        x_mm = x_m * 1000
-        y_mm = y_m * 1000
-        z_mm = z_m * 1000
+        now = time.time()
+
+        if self.last_command is not None:
+            lx, ly, lz = self.last_command
+            dist = ((x_m - lx)**2 + (y_m - ly)**2 + (z_m - lz)**2) ** 0.5
+            if dist < self.min_move_m:
+                # Too small movement, skip
+                return
+
+        x_mm = x_m * 1000.0
+        y_mm = y_m * 1000.0
+        z_mm = z_m * 1000.0
+
         print(f"[ROBOT] meters: ({x_m:.3f}, {y_m:.3f}, {z_m:.3f}) -> "
               f"mm: ({x_mm:.1f}, {y_mm:.1f}, {z_mm:.1f})")
 
@@ -365,6 +385,8 @@ def main():
     frame_count = 0
     t0 = time.time()
 
+    last_control_time = time.time()
+
     # Resizable window for visualization
     cv2.namedWindow("visual_servo", cv2.WINDOW_NORMAL)
     cv2.resizeWindow("visual_servo", 900, 600)
@@ -509,8 +531,12 @@ def main():
                         last_target_time = time.time()
 
                         # If tracking enabled, send smoothed position to robot
-                        if tracking_enabled:
-                            robot.point_at(P_smooth[0], P_smooth[1], P_smooth[2])
+                        if tracking_enabled and P_smooth is not None:
+                            now = time.time()
+                            if now - last_control_time >= CONTROL_PERIOD:
+                                last_control_time = now
+                                robot.point_at(P_smooth[0], P_smooth[1], P_smooth[2])
+
 
                         # Show 3D Robot position on frame
                         pos_text = (
