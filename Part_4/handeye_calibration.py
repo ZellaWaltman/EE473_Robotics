@@ -314,15 +314,28 @@ def compute_errors(T_camera_base, T_base_ee_list, T_camera_tag_list, T_ee_tag):
     pos_errors_mm = np.array(pos_errors_mm)
     ang_errors_deg = np.array(ang_errors_deg)
 
+    pos_mean = float(pos_errors_mm.mean())
+    pos_std  = float(pos_errors_mm.std())
+    ang_mean = float(ang_errors_deg.mean())
+    ang_std  = float(ang_errors_deg.std())
+
+    # 3σ outlier detection (you can also OR position/orientation if you want stricter criteria)
+    outlier_mask = (pos_errors_mm > pos_mean + 3.0 * pos_std) | \
+                   (ang_errors_deg > ang_mean + 3.0 * ang_std)
+    outlier_indices = np.where(outlier_mask)[0].tolist()
+    outlier_rate = float(outlier_mask.mean()) if len(outlier_mask) > 0 else 0.0
+
     stats = {
-        "pos_mean_mm": float(pos_errors_mm.mean()),
+        "pos_mean_mm": pos_mean,
         "pos_max_mm":  float(pos_errors_mm.max()),
-        "pos_std_mm":  float(pos_errors_mm.std()),
-        "ang_mean_deg": float(ang_errors_deg.mean()),
+        "pos_std_mm":  pos_std,
+        "ang_mean_deg": ang_mean,
         "ang_max_deg":  float(ang_errors_deg.max()),
-        "ang_std_deg":  float(ang_errors_deg.std()),
+        "ang_std_deg":  ang_std,
         "pos_per_sample_mm": pos_errors_mm.tolist(),
         "ang_per_sample_deg": ang_errors_deg.tolist(),
+        "outlier_indices": outlier_indices,
+        "outlier_rate": outlier_rate
     }
 
     return stats
@@ -663,6 +676,53 @@ def main():
             print("Orientation error (deg): mean={:.2f}, max={:.2f}, std={:.2f}".format(
                 stats["ang_mean_deg"], stats["ang_max_deg"], stats["ang_std_deg"]
             ))
+
+            print("Orientation error (deg): mean={:.2f}, max={:.2f}, std={:.2f}".format(
+                stats["ang_mean_deg"], stats["ang_max_deg"], stats["ang_std_deg"]
+            ))
+            print("Outlier rate: {:.1f}% ({} / {} poses > 3σ)".format(
+                100.0 * stats["outlier_rate"],
+                len(stats["outlier_indices"]),
+                len(stats["pos_per_sample_mm"])
+            ))
+            
+            # Simple quality grading
+            if stats["pos_mean_mm"] < 10 and stats["ang_mean_deg"] < 5:
+                print("[QUALITY] Excellent calibration.")
+            elif stats["pos_mean_mm"] < 15 and stats["ang_mean_deg"] < 10:
+                print("[QUALITY] Good calibration.")
+            else:
+                print("[QUALITY] Calibration is mediocre/poor, consider recollecting data.")
+            
+            # Optional: react to high outlier rate
+            if stats["outlier_rate"] > 0.20:
+                print("[WARN] Outlier rate > 20%. This may indicate systematic issues in data or setup.")
+                
+            # Filter out outliers and recompute T_ee_tag from inliers only
+            if stats["outlier_rate"] > 0.20:
+                inlier_idx = [i for i in range(len(T_base_ee_list))
+                              if i not in stats["outlier_indices"]]
+                print(f"[INFO] Recomputing T_ee_tag using {len(inlier_idx)} inlier poses...")
+            
+                T_ee_tag_samples_inliers = []
+                for i in inlier_idx:
+                    T_b_e = T_base_ee_list[i]
+                    T_c_t = T_camera_tag_list[i]
+                    T_c_e = T_camera_base @ T_b_e
+                    T_e_t_i = invert_T(T_c_e) @ T_c_t
+                    T_ee_tag_samples_inliers.append(T_e_t_i)
+            
+                T_ee_tag = average_transform(T_ee_tag_samples_inliers)
+            
+                # Recompute final stats with the refined T_ee_tag
+                stats = compute_errors(T_camera_base, T_base_ee_list, T_camera_tag_list, T_ee_tag)
+                print("[INFO] After inlier-only recompute:")
+                print("Position error (mm): mean={:.2f}, max={:.2f}, std={:.2f}".format(
+                    stats["pos_mean_mm"], stats["pos_max_mm"], stats["pos_std_mm"]
+                ))
+                print("Orientation error (deg): mean={:.2f}, max={:.2f}, std={:.2f}".format(
+                    stats["ang_mean_deg"], stats["ang_max_deg"], stats["ang_std_deg"]
+                ))
 
             # -------------------------------------------------------
             # Save calibration to YAML
