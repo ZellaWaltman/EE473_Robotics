@@ -191,21 +191,27 @@ def main():
                     t_cam = det.pose_t.flatten()  # 3D position in camera frame (meters)
                     samples_cam[tid].append(t_cam)
 
-            # Text overlay: sample counts
-            y0 = 30
-            for tid in TAG_IDS:
-                n = len(samples_cam[tid])
-                txt = f"Tag {tid}: {n}/{SAMPLES_PER_TAG}"
-                cv2.putText(frame, txt, (10, y0),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-                y0 += 25
-            
             h,w = frame.shape[:2]
             x = w - 150
             y = h - 10
 
+            # Text overlay: sample counts
+            # --- Draw sample counts at the bottom-left ---
+            line_height = 25
+            block_height = len(TAG_IDS) * line_height
+
+            y0 = h - block_height - 10  # start 10 px above bottom block
+
+            for tid in TAG_IDS:
+                n = len(samples_cam[tid])
+                txt = f"Tag {tid}: {n}/{SAMPLES_PER_TAG}"
+
+                cv2.putText(frame, txt, (10, y0),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+                y0 += line_height
+
             cv2.putText(frame, f"FPS: {fps:.1f}", (x, y),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
             cv2.imshow("calibration_collection", frame)
 
