@@ -812,7 +812,7 @@ def main():
 
             # Display numeric info & visualization
             h, w = frame.shape[:2]
-            base_y = h - 60  # starting y coordinate for bottom text
+            base_y = h - 100  # starting y coordinate for bottom text
             line_dy = 18     # vertical spacing
 
             if T_c_e_vision is not None:
@@ -872,6 +872,20 @@ def main():
                     (10, base_y + line_dy),
                     font_scale=0.5,
                     color=(0, 255, 255)
+                )
+                put_text_outline(
+                    frame,
+                    f"FK EE XYZ (m):     ({t_fk[0]:.3f}, {t_fk[1]:.3f}, {t_fk[2]:.3f})",
+                    (10, base_y + 2 * line_dy),
+                    font_scale=0.5,
+                    color=(200, 200, 200)
+                )
+                put_text_outline(
+                    frame,
+                    f"FK RPY (deg):      ({rpy_fk_deg[0]:.1f}, {rpy_fk_deg[1]:.1f}, {rpy_fk_deg[2]:.1f})",
+                    (10, base_y + 3 * line_dy),
+                    font_scale=0.5,
+                    color=(200, 200, 200)
                 )
                 put_text_outline(
                     frame,
