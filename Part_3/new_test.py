@@ -5,6 +5,7 @@ import depthai as dai
 import numpy as np
 import time
 import yaml
+import threading
 import blobconverter
 from pydobot import Dobot
 from serial.tools import list_ports
@@ -40,9 +41,9 @@ ALPHA = 0.3
 # Workspace / safety limits (robot frame, meters)
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 REACH_MIN = 0.15 # min radius from base (avoid EE getting too close)
-REACH_MAX = 0.30 # max reach (Arm has ~0.32 cm reach)
+REACH_MAX = 0.25 # max reach (Arm has ~0.32 cm reach)
 Z_MIN = 0.01 # 5 cm above table
-Z_MAX = 0.175 # 17.5 cm above table
+Z_MAX = 0.130 # 17.5 cm above table
 
 # Target YOLO classes (COCO names) and key bindings
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -86,85 +87,74 @@ class RobotInterface:
     # Dobot Initialization
     # - - - - - - - - - - - - - - - - - - - - - - - - - -
     def __init__(self):
-        # Connect to Dobot Magician ("" = auto-select first arm found, USB baud rate)
-        ports = [port.device for port in serial.tools.list_ports.comports()
-         if 'ttyUSB' in port.device or 'ttyACM' in port.device]
-
-        if len(ports) == 0:
-            raise RuntimeError("No serial ports found for Dobot.")
+        ports = [p.device for p in serial.tools.list_ports.comports()
+                 if 'ttyUSB' in p.device or 'ttyACM' in p.device]
+        if not ports:
+            raise RuntimeError("No Dobot arm found")
         port = ports[0]
-        print(f"Using port: {port}")
 
-        # pick first port automatically (same behavior as previous code auto-connect)
+        print(f"Connecting to Dobot on {port}...")
         self.device = Dobot(port=port, verbose=False)
-
-        # Set speed & initialize rate limiting
         self.device.speed(velocity=150, acceleration=150)
-        
-        curr_pos = self.device.pose()
-        print(f"Connected to Dobot on {port}")
-        print(f"Current Position: {curr_pos}")
-      
-        # Define Robot Sleep Pose
-        self.SLEEP_X = 0.160
-        self.SLEEP_Y = 0.00
-        self.SLEEP_Z = 0.130
-        self.SLEEP_R = 0.0
 
-        # Store last commanded pose (x, y, z)
-        self.last_command = None
-        
-        # Rate-limiting parameters for point_at()
-        self.last_send_time = 0.0   # time.time() of last command
-        self.min_send_dt = 0.0      # minimum time between commands (s)
-        self.min_move_m = 0.01     # minimum movement (m) ≈ 5 mm
+        # Shared state
+        self._target = None          # (x_m, y_m, z_m)
+        self._lock = threading.Lock()
+        self._stop = False
+        self.min_move_m = 0.008      # 8 mm movement threshold
+        self.control_rate = 0.12     # 120 ms between robot moves (≈ 8 Hz)
 
-    # Sleep Function
-    # - - - - - - - - - - - - - - - - - - - - - - - - - -
-    # x_mm, y_mm, z_mm = Cartesian position in millimeters
-    # r_deg = rotation of end effector in degrees
-  
+        # Start controller thread
+        self._thread = threading.Thread(target=self._control_loop, daemon=True)
+        self._thread.start()
+
+    def _control_loop(self):
+        """Runs in the background, executes one blocking move at a time."""
+        last_sent = None
+
+        while not self._stop:
+            time.sleep(self.control_rate)
+
+            # Safely read latest target
+            with self._lock:
+                tgt = self._target
+
+            if tgt is None:
+                continue
+
+            x_m, y_m, z_m = tgt
+
+            if last_sent is not None:
+                lx, ly, lz = last_sent
+                dist = np.linalg.norm([x_m - lx, y_m - ly, z_m - lz])
+                if dist < self.min_move_m:
+                    continue  # ignore tiny moves
+
+            # Convert to mm
+            x_mm = x_m * 1000
+            y_mm = y_m * 1000
+            z_mm = z_m * 1000
+
+            # Blocking move, but it doesn't block the vision thread
+            self.device.move_to(x_mm, y_mm, z_mm, 0, wait=True)
+            last_sent = (x_m, y_m, z_m)
+
+    def point_at(self, x_m, y_m, z_m):
+        """Only updates the target. Does NOT block."""
+        with self._lock:
+            self._target = (x_m, y_m, z_m)
+
     def go_to_sleep(self):
         print("[ROBOT] Going to sleep pose...")
-        self.device.move_to(200.0,
-                            0.0,
-                            100.0,
-                            0.0, 
-                            wait=False)
+        self.device.move_to(200.0, 0.0, 100.0, 0.0, wait=True)
 
-    # Object Tracking Movement
-    # - - - - - - - - - - - - - - - - - - - - - - - - - -
-    # Command end-effector to point at (x,y,z) in robot base frame (meters).
-    # Orientation kept fixed (pointing down) 
-  
-    def point_at(self, x_m, y_m, z_m):
-        now = time.time()
-
-        if self.last_command is not None:
-            lx, ly, lz = self.last_command
-            dist = ((x_m - lx)**2 + (y_m - ly)**2 + (z_m - lz)**2) ** 0.5
-            if dist < self.min_move_m:
-                # Too small movement, skip
-                return
-
-        x_mm = x_m * 1000.0
-        y_mm = y_m * 1000.0
-        z_mm = z_m * 1000.0
-
-        print(f"[ROBOT] meters: ({x_m:.3f}, {y_m:.3f}, {z_m:.3f}) -> "
-              f"mm: ({x_mm:.1f}, {y_mm:.1f}, {z_mm:.1f})")
-
-        self.last_command = (x_m, y_m, z_m)
-        self.device.move_to(x_mm, y_mm, z_mm, self.SLEEP_R, wait=False)
-
-    # Emergency Stop
-    # - - - - - - - - - - - - - - - - - - - - - - - - - -    
     def emergency_stop(self):
-        print("EMERGENCY STOP!")
-        # pydobot does not support queue stop; no-op
-        # Optionally turn off pump or motors
-        # self.device.suck(False)
-        pass
+        with self._lock:
+            self._target = None
+
+    def shutdown(self):
+        self._stop = True
+        self._thread.join(timeout=1.0)
 
 # ---------------------------------------------------------------------------
 # Load calibration: R, t (camera -> robot)
@@ -603,9 +593,10 @@ def main():
                 print(f"[INFO] Switched target class to: {current_target_class}")
                 P_smooth = None  # reset smoothing
 
+        robot.shutdown()
+
         # Close OpenCV windows after breaking from loop
         cv2.destroyAllWindows()
 
 if __name__ == "__main__":
     main()
-
