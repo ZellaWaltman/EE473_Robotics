@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import os
 import cv2
 import depthai as dai
 import numpy as np
@@ -78,6 +79,46 @@ def rot_to_euler_rpy(R):
         yaw = 0.0
       
     return roll, pitch, yaw
+
+# -------------------------------------------------------
+# Display Text helper
+# -------------------------------------------------------
+def put_text_outline(img, text, org,
+                     font=cv2.FONT_HERSHEY_SIMPLEX,
+                     font_scale=0.5,
+                     color=(255, 255, 255),
+                     thickness=1):
+    # Black outline
+    cv2.putText(img, text, org, font, font_scale,
+                (0, 0, 0), thickness + 2, cv2.LINE_AA)
+    # Main colored text
+    cv2.putText(img, text, org, font, font_scale,
+                color, thickness, cv2.LINE_AA)
+
+# -------------------------------------------------------
+# Load existing hand-eye calibration (if present)
+# -------------------------------------------------------
+def load_handeye_from_yaml():
+    with open(HANDEYE_OUTPUT_YAML, "r") as f:
+        data = yaml.safe_load(f)
+
+    R = np.array(data["T_ee_tag"]["rotation_matrix"], dtype=float)
+    t = np.array(data["T_ee_tag"]["translation_m"], dtype=float)
+    T_ee_tag = make_T(R, t)
+    errors = data.get("errors", None)
+
+    print("[INFO] Loaded existing T_ee_tag from YAML.")
+    print("R_ee_tag =\n", R)
+    print("t_ee_tag (m) =", t)
+    if errors is not None:
+        print("Prev. Position error (mm): mean={:.2f}, max={:.2f}, std={:.2f}".format(
+            errors["pos_mean_mm"], errors["pos_max_mm"], errors["pos_std_mm"]
+        ))
+        print("Prev. Orientation error (deg): mean={:.2f}, max={:.2f}, std={:.2f}".format(
+            errors["ang_mean_deg"], errors["ang_max_deg"], errors["ang_std_deg"]
+        ))
+
+    return T_ee_tag
 
 # -------------------------------------------------------
 # Load Camera -> Robot calibration from Part 2
@@ -408,6 +449,23 @@ def main():
     T_camera_tag_list = []
     T_ee_tag_samples = []
 
+        # Decide whether to reuse an existing hand-eye file
+    use_existing = False
+    T_ee_tag = None
+
+    if os.path.exists(HANDEYE_OUTPUT_YAML):
+        ans = input(
+            f"[INFO] Found existing hand-eye file '{HANDEYE_OUTPUT_YAML}'. "
+            "Load it (l) or recalibrate (r)? [l/r]: "
+        ).strip().lower()
+        if ans == "l":
+            T_ee_tag = load_handeye_from_yaml()
+            use_existing = True
+        else:
+            print("[INFO] Recalibrating hand-eye...")
+    else:
+        print("[INFO] No existing hand-eye file, performing new calibration...")
+
     # Load pipeline into OAK Camera
     with dai.Device(pipeline) as device:
         # Queue size = 4, will store 4 frames
@@ -421,192 +479,200 @@ def main():
         print(f"       Move the robot through diverse poses where Tag ID {HAND_TAG_ID} is visible.")
         print(f"       Press 'c' to capture a sample when the tag is detected.")
         print(f"       Need at least {MIN_SAMPLES} samples. Press 'q' to quit early.")
-
-        # ----------------------------------------------------------------
-        # Phase 1: Data Collection
-        # ----------------------------------------------------------------
-        while True:
-            inRgb = qRgb.get()
-            frame = inRgb.getCvFrame()
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-            detections = at_detector.detect(
-                gray,
-                estimate_tag_pose=True,
-                camera_params=[FX, FY, CX, CY],
-                tag_size=TAG_SIZE_M,
-            )
-
-            # Draw detections & highlight tag on EE
-            tag_found = False
-            best_det = None
-
-            for det in detections:
-                tag_id = det.tag_id
-                corners = det.corners.astype(int)
-                center = det.center.astype(int)
-                cx, cy = int(center[0]), int(center[1])
-
-                color = (0, 255, 0) if tag_id == HAND_TAG_ID else (255, 0, 0)
-                cv2.polylines(frame, [corners], True, color, 2)
-                cv2.circle(frame, (cx, cy), 4, (0, 0, 255), -1)
-
-                margin = det.decision_margin
-                txt = f"ID {tag_id} m={margin:.1f}"
-                cv2.putText(frame, txt, (cx + 5, cy - 5),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
-
-                if tag_id == HAND_TAG_ID and margin >= MIN_DECISION_MARGIN:
-                    tag_found = True
-                    best_det = det
-
-            n_samples = len(T_base_ee_list)
-            info_text = f"Samples: {n_samples}/{MIN_SAMPLES} (max {MAX_SAMPLES})"
-            cv2.putText(frame, info_text, (10, 25),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
-
-            hint_text = "Press 'c' to capture, 'q' to quit."
-            cv2.putText(frame, hint_text, (10, 50),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
-
-            if not tag_found:
-                cv2.putText(frame, "Tag not detected or low margin...",
-                            (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                            (0, 0, 255), 1)
-
-            cv2.imshow("handeye_collection", frame)
-
-            key = cv2.waitKey(1) & 0xFF
-
-            if key == ord('q'):
-                print("[WARN] User quit during data collection.")
-                cv2.destroyAllWindows()
-                return
-
-            if key == ord('c') and tag_found and best_det is not None:
-                # Read robot EE pose
-                T_base_ee = robot.get_T_base_ee()
-
-                # Tag pose in camera frame from AprilTag detection
-                R_cam_tag = best_det.pose_R
-                t_cam_tag = best_det.pose_t.flatten()  # meters
-                T_camera_tag = make_T(R_cam_tag, t_cam_tag)
-
-                T_base_ee_list.append(T_base_ee)
-                T_camera_tag_list.append(T_camera_tag)
-
-                print(f"[INFO] Captured sample {len(T_base_ee_list)}")
-
-                if len(T_base_ee_list) >= MAX_SAMPLES:
-                    print("[INFO] Reached MAX_SAMPLES, stopping collection.")
+        
+        # ---------------------------------------------
+        # Phase 1–3: only if NOT using existing file
+        # ---------------------------------------------
+        if not use_existing:
+        
+            # ----------------------------------------------------------------
+            # Phase 1: Data Collection
+            # ----------------------------------------------------------------
+            while True:
+                inRgb = qRgb.get()
+                frame = inRgb.getCvFrame()
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    
+                detections = at_detector.detect(
+                    gray,
+                    estimate_tag_pose=True,
+                    camera_params=[FX, FY, CX, CY],
+                    tag_size=TAG_SIZE_M,
+                )
+    
+                # Draw detections & highlight tag on EE
+                tag_found = False
+                best_det = None
+    
+                for det in detections:
+                    tag_id = det.tag_id
+                    corners = det.corners.astype(int)
+                    center = det.center.astype(int)
+                    cx, cy = int(center[0]), int(center[1])
+    
+                    color = (0, 255, 0) if tag_id == HAND_TAG_ID else (255, 0, 0)
+                    cv2.polylines(frame, [corners], True, color, 2)
+                    cv2.circle(frame, (cx, cy), 4, (0, 0, 255), -1)
+    
+                    margin = det.decision_margin
+                    txt = f"ID {tag_id} m={margin:.1f}"
+                    cv2.putText(frame, txt, (cx + 5, cy - 5),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+    
+                    if tag_id == HAND_TAG_ID and margin >= MIN_DECISION_MARGIN:
+                        tag_found = True
+                        best_det = det
+    
+                n_samples = len(T_base_ee_list)
+                info_text = f"Samples: {n_samples}/{MIN_SAMPLES} (max {MAX_SAMPLES})"
+                cv2.putText(frame, info_text, (10, 25),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+    
+                hint_text = "Press 'c' to capture, 'q' to quit."
+                cv2.putText(frame, hint_text, (10, 50),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+    
+                if not tag_found:
+                    cv2.putText(frame, "Tag not detected or low margin...",
+                                (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                                (0, 0, 255), 1)
+    
+                cv2.imshow("handeye_collection", frame)
+    
+                key = cv2.waitKey(1) & 0xFF
+    
+                if key == ord('q'):
+                    print("[WARN] User quit during data collection.")
+                    cv2.destroyAllWindows()
+                    return
+    
+                if key == ord('c') and tag_found and best_det is not None:
+                    # Read robot EE pose
+                    T_base_ee = robot.get_T_base_ee()
+    
+                    # Tag pose in camera frame from AprilTag detection
+                    R_cam_tag = best_det.pose_R
+                    t_cam_tag = best_det.pose_t.flatten()  # meters
+                    T_camera_tag = make_T(R_cam_tag, t_cam_tag)
+    
+                    T_base_ee_list.append(T_base_ee)
+                    T_camera_tag_list.append(T_camera_tag)
+    
+                    print(f"[INFO] Captured sample {len(T_base_ee_list)}")
+    
+                    if len(T_base_ee_list) >= MAX_SAMPLES:
+                        print("[INFO] Reached MAX_SAMPLES, stopping collection.")
+                        break
+    
+                # Stop automatically if enough samples
+                if len(T_base_ee_list) >= MIN_SAMPLES:
+                    # You can choose to keep collecting more, but let's break here
+                    print("[INFO] Collected required number of samples.")
                     break
-
-            # Stop automatically if enough samples
-            if len(T_base_ee_list) >= MIN_SAMPLES:
-                # You can choose to keep collecting more, but let's break here
-                print("[INFO] Collected required number of samples.")
-                break
-
-        cv2.destroyAllWindows()
-
-        if len(T_base_ee_list) < MIN_SAMPLES:
-            print("[ERROR] Not enough samples collected for hand-eye calibration.")
-            return
-
-        # ----------------------------------------------------------------
-        # Phase 2: Solve for T_ee_tag via per-sample estimation + averaging
-        # ----------------------------------------------------------------
-        print("[INFO] Computing hand-eye transform T_ee_tag via per-sample method...")
-
-        T_ee_tag_samples = []
-        for T_b_e, T_c_t in zip(T_base_ee_list, T_camera_tag_list):
-            # Camera -> EE from FK: T_c_e = T_camera_base * T_base_ee
-            T_c_e = T_camera_base @ T_b_e
-
-            # From T_c_t = T_c_e * T_e_t  =>  T_e_t = T_c_e^{-1} * T_c_t
-            T_e_t_i = invert_T(T_c_e) @ T_c_t
-            T_ee_tag_samples.append(T_e_t_i)
-
-        # Average over all samples (SVD on rotations + mean of translations)
-        # First averaging pass
-        T_ee_tag_initial = average_transform(T_ee_tag_samples)
-        
-        # Compute residuals for each sample (how far each T_e_t_i is from the initial average)
-        errors_mm = []
-        for T_e_t_i in T_ee_tag_samples:
-            T_diff = invert_T(T_ee_tag_initial) @ T_e_t_i   # relative transform
-            t_diff = T_diff[:3, 3]                          # translation part
-            e_mm = np.linalg.norm(t_diff) * 1000.0          # residual error in mm
-            errors_mm.append(e_mm)
-        
-        errors_mm = np.array(errors_mm)
-        mean_e = errors_mm.mean()
-        std_e = errors_mm.std()
-        
-        print(f"[DEBUG] Initial per-sample residuals (mm): {errors_mm}")
-        print(f"[DEBUG] Mean={mean_e:.2f} mm  Std={std_e:.2f} mm")
-        
-        # Filter out outliers: keep samples within 2 std deviations of mean
-        filtered_samples = [
-            T for T, e in zip(T_ee_tag_samples, errors_mm)
-            if e <= mean_e + 2*std_e
-        ]
-        
-        print(f"[INFO] Keeping {len(filtered_samples)} / {len(T_ee_tag_samples)} samples after filtering.")
-        
-        # Final averaged transform (more robust)
-        T_ee_tag = average_transform(filtered_samples)
-
-        R_ee_tag = T_ee_tag[:3, :3]
-        t_ee_tag = T_ee_tag[:3, 3]
-
-        print("[INFO] Estimated T_ee_tag (end-effector -> tag):")
-        print("R_ee_tag =\n", R_ee_tag)
-        print("t_ee_tag (m) =", t_ee_tag)
-
-        # Euler angles of tag frame w.r.t EE frame
-        roll, pitch, yaw = rot_to_euler_rpy(R_ee_tag)
-        roll_deg, pitch_deg, yaw_deg = np.degrees([roll, pitch, yaw])
-        print(f"Euler rpy (deg) tag wrt EE: roll={roll_deg:.1f}, pitch={pitch_deg:.1f}, yaw={yaw_deg:.1f}")
-
-        # -------------------------------------------------------
-        # Phase 3: Error analysis
-        # -------------------------------------------------------
-        print("[INFO] Computing reprojection errors...")
-        stats = compute_errors(T_camera_base, T_base_ee_list, T_camera_tag_list, T_ee_tag)
-
-        print("Position error (mm): mean={:.2f}, max={:.2f}, std={:.2f}".format(
-            stats["pos_mean_mm"], stats["pos_max_mm"], stats["pos_std_mm"]
-        ))
-        print("Orientation error (deg): mean={:.2f}, max={:.2f}, std={:.2f}".format(
-            stats["ang_mean_deg"], stats["ang_max_deg"], stats["ang_std_deg"]
-        ))
-
-        # -------------------------------------------------------
-        # Save calibration to YAML
-        # -------------------------------------------------------
-        calib_data = {
-            "T_ee_tag": {
-                "rotation_matrix": R_ee_tag.tolist(),
-                "translation_m": t_ee_tag.tolist(),
-                "euler_rpy_deg": [float(roll_deg), float(pitch_deg), float(yaw_deg)],
-            },
-            "errors": stats,
-            "meta": {
-                "num_samples": len(T_base_ee_list),
-                "hand_tag_id": HAND_TAG_ID,
-                "tag_size_m": TAG_SIZE_M,
-                "camera_params": [FX, FY, CX, CY],
-                "camera_robot_calib_file": CAMERA_ROBOT_CALIB_YAML,
-                "timestamp": time.time(),
-                "description": "End-effector to AprilTag hand-eye calibration (Dobot + OAK-D).",
-            },
-        }
-
-        with open(HANDEYE_OUTPUT_YAML, "w") as f:
-            yaml.dump(calib_data, f)
-
-        print(f"[INFO] Hand-eye calibration saved to {HANDEYE_OUTPUT_YAML}")
+    
+            cv2.destroyAllWindows()
+    
+            if len(T_base_ee_list) < MIN_SAMPLES:
+                print("[ERROR] Not enough samples collected for hand-eye calibration.")
+                return
+    
+            # ----------------------------------------------------------------
+            # Phase 2: Solve for T_ee_tag via per-sample estimation + averaging
+            # ----------------------------------------------------------------
+            print("[INFO] Computing hand-eye transform T_ee_tag via per-sample method...")
+    
+            T_ee_tag_samples = []
+            for T_b_e, T_c_t in zip(T_base_ee_list, T_camera_tag_list):
+                # Camera -> EE from FK: T_c_e = T_camera_base * T_base_ee
+                T_c_e = T_camera_base @ T_b_e
+    
+                # From T_c_t = T_c_e * T_e_t  =>  T_e_t = T_c_e^{-1} * T_c_t
+                T_e_t_i = invert_T(T_c_e) @ T_c_t
+                T_ee_tag_samples.append(T_e_t_i)
+    
+            # Average over all samples (SVD on rotations + mean of translations)
+            # First averaging pass
+            T_ee_tag_initial = average_transform(T_ee_tag_samples)
+            
+            # Compute residuals for each sample (how far each T_e_t_i is from the initial average)
+            errors_mm = []
+            for T_e_t_i in T_ee_tag_samples:
+                T_diff = invert_T(T_ee_tag_initial) @ T_e_t_i   # relative transform
+                t_diff = T_diff[:3, 3]                          # translation part
+                e_mm = np.linalg.norm(t_diff) * 1000.0          # residual error in mm
+                errors_mm.append(e_mm)
+            
+            errors_mm = np.array(errors_mm)
+            mean_e = errors_mm.mean()
+            std_e = errors_mm.std()
+            
+            print(f"[DEBUG] Initial per-sample residuals (mm): {errors_mm}")
+            print(f"[DEBUG] Mean={mean_e:.2f} mm  Std={std_e:.2f} mm")
+            
+            # Filter out outliers: keep samples within 2 std deviations of mean
+            filtered_samples = [
+                T for T, e in zip(T_ee_tag_samples, errors_mm)
+                if e <= mean_e + 2*std_e
+            ]
+            
+            print(f"[INFO] Keeping {len(filtered_samples)} / {len(T_ee_tag_samples)} samples after filtering.")
+            
+            # Final averaged transform (more robust)
+            T_ee_tag = average_transform(filtered_samples)
+    
+            R_ee_tag = T_ee_tag[:3, :3]
+            t_ee_tag = T_ee_tag[:3, 3]
+    
+            print("[INFO] Estimated T_ee_tag (end-effector -> tag):")
+            print("R_ee_tag =\n", R_ee_tag)
+            print("t_ee_tag (m) =", t_ee_tag)
+    
+            # Euler angles of tag frame w.r.t EE frame
+            roll, pitch, yaw = rot_to_euler_rpy(R_ee_tag)
+            roll_deg, pitch_deg, yaw_deg = np.degrees([roll, pitch, yaw])
+            print(f"Euler rpy (deg) tag wrt EE: roll={roll_deg:.1f}, pitch={pitch_deg:.1f}, yaw={yaw_deg:.1f}")
+    
+            # -------------------------------------------------------
+            # Phase 3: Error analysis
+            # -------------------------------------------------------
+            print("[INFO] Computing reprojection errors...")
+            stats = compute_errors(T_camera_base, T_base_ee_list, T_camera_tag_list, T_ee_tag)
+    
+            print("Position error (mm): mean={:.2f}, max={:.2f}, std={:.2f}".format(
+                stats["pos_mean_mm"], stats["pos_max_mm"], stats["pos_std_mm"]
+            ))
+            print("Orientation error (deg): mean={:.2f}, max={:.2f}, std={:.2f}".format(
+                stats["ang_mean_deg"], stats["ang_max_deg"], stats["ang_std_deg"]
+            ))
+    
+            # -------------------------------------------------------
+            # Save calibration to YAML
+            # -------------------------------------------------------
+            calib_data = {
+                "T_ee_tag": {
+                    "rotation_matrix": R_ee_tag.tolist(),
+                    "translation_m": t_ee_tag.tolist(),
+                    "euler_rpy_deg": [float(roll_deg), float(pitch_deg), float(yaw_deg)],
+                },
+                "errors": stats,
+                "meta": {
+                    "num_samples": len(T_base_ee_list),
+                    "hand_tag_id": HAND_TAG_ID,
+                    "tag_size_m": TAG_SIZE_M,
+                    "camera_params": [FX, FY, CX, CY],
+                    "camera_robot_calib_file": CAMERA_ROBOT_CALIB_YAML,
+                    "timestamp": time.time(),
+                    "description": "End-effector to AprilTag hand-eye calibration (Dobot + OAK-D).",
+                },
+            }
+    
+            with open(HANDEYE_OUTPUT_YAML, "w") as f:
+                yaml.dump(calib_data, f)
+    
+            print(f"[INFO] Hand-eye calibration saved to {HANDEYE_OUTPUT_YAML}")
+            
+        else:
+            print("[INFO] Skipping calibration: using T_ee_tag loaded from file.")
 
         # -------------------------------------------------------
         # Phase 4: Real-time End-Effector tracking
@@ -662,31 +728,47 @@ def main():
 
                     # T_camera_ee = T_camera_tag * T_tag_ee
                     T_c_e_vision = T_c_t @ T_tag_ee
+                    
+            # Display numeric info using outlined text at the bottom
+            h, w = frame.shape[:2]
+            base_y = h - 50  # starting y coordinate for bottom text
+            line_dy = 20     # vertical spacing
 
-            # Display numeric info
             if T_c_e_vision is not None:
                 t_vis = T_c_e_vision[:3, 3]
 
                 # Position error between vision & FK in camera frame
                 pos_err_mm = np.linalg.norm(t_vis - t_fk) * 1000.0
 
-                cv2.putText(frame,
-                            f"EE Vision XYZ (m): ({t_vis[0]:.3f}, {t_vis[1]:.3f}, {t_vis[2]:.3f})",
-                            (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                            (0, 255, 255), 1)
-                cv2.putText(frame,
-                            f"EE FK XYZ (m):     ({t_fk[0]:.3f}, {t_fk[1]:.3f}, {t_fk[2]:.3f})",
-                            (10, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                            (0, 255, 255), 1)
-                cv2.putText(frame,
-                            f"Vision vs FK pos error: {pos_err_mm:.1f} mm",
-                            (10, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                            (0, 255, 0), 1)
+                put_text_outline(
+                    frame,
+                    f"EE Vision XYZ (m): ({t_vis[0]:.3f}, {t_vis[1]:.3f}, {t_vis[2]:.3f})",
+                    (10, base_y),
+                    font_scale=0.5,
+                    color=(0, 255, 255)
+                )
+                put_text_outline(
+                    frame,
+                    f"EE FK XYZ (m):     ({t_fk[0]:.3f}, {t_fk[1]:.3f}, {t_fk[2]:.3f})",
+                    (10, base_y + line_dy),
+                    font_scale=0.5,
+                    color=(0, 255, 255)
+                )
+                put_text_outline(
+                    frame,
+                    f"Vision vs FK pos error: {pos_err_mm:.1f} mm",
+                    (10, base_y + 2 * line_dy),
+                    font_scale=0.5,
+                    color=(0, 255, 0)
+                )
             else:
-                cv2.putText(frame,
-                            "Tag not detected for vision EE pose...",
-                            (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                            (0, 0, 255), 1)
+                put_text_outline(
+                    frame,
+                    "Tag not detected for vision EE pose...",
+                    (10, base_y),
+                    font_scale=0.5,
+                    color=(0, 0, 255)
+                )
 
             cv2.imshow("ee_tracking", frame)
 
