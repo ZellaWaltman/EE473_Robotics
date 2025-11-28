@@ -57,7 +57,7 @@ CONF_THRESH = 0.45
 # Timeout for lost target (seconds)
 TARGET_LOST_TIMEOUT = 3.0
 
-CONTROL_PERIOD = 0.2  # seconds between robot commands (~5 Hz), tune as you like
+CONTROL_PERIOD = 0.2  # seconds between robot commands (~5 Hz)
 
 # COCO labels (80 classes)
 # ----------------------------------------------------
