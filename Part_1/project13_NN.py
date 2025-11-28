@@ -32,7 +32,7 @@ label_map = [
 ]
 
 # Target classes for assignment
-TARGET_CLASSES = {"laptop", "cup", "apple", "bottle", "person"}
+TARGET_CLASSES = {"laptop", "cup", "banana", "bottle", "person"}
 
 
 # ----------------------------------------------------
