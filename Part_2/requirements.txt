@@ -1,0 +1,5 @@
+```text
+opencv-python
+numpy
+depthai
+pupil-apriltags
