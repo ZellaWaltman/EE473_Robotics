@@ -1,0 +1,7 @@
+opencv-python
+numpy
+depthai
+pupil-apriltags
+pydobot
+pyserial
+PyYAML
