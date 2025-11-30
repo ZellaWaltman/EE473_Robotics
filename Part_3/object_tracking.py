@@ -42,8 +42,8 @@ ALPHA = 0.3
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 REACH_MIN = 0.15 # min radius from base (avoid EE getting too close)
 REACH_MAX = 0.25 # max reach (Arm has ~0.32 cm reach)
-Z_MIN = 0.01 # 5 cm above table
-Z_MAX = 0.130 # 17.5 cm above table
+Z_MIN = 0.01 # 1 cm above robot base frame origin
+Z_MAX = 0.130 # 13 cm above robot base frame origin
 
 # Target YOLO classes (COCO names) and key bindings
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -57,7 +57,7 @@ CONF_THRESH = 0.45
 # Timeout for lost target (seconds)
 TARGET_LOST_TIMEOUT = 3.0
 
-CONTROL_PERIOD = 0.2  # seconds between robot commands (~5 Hz)
+CONTROL_PERIOD = 0.2 # seconds between robot commands (~5 Hz)
 
 # COCO labels (80 classes)
 # ----------------------------------------------------
@@ -72,7 +72,6 @@ LABEL_MAP = [
     "cell phone", "microwave", "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase",
     "scissors", "teddy bear", "hair drier", "toothbrush"
 ]
-
 
 # ---------------------------------------------------------------------------
 # Robot Interface (using pydobot)
@@ -109,7 +108,8 @@ class RobotInterface:
         self._thread.start()
 
     def _control_loop(self):
-        """Runs in the background, executes one blocking move at a time."""
+        # Runs in the background, executes one blocking move at a time
+        
         last_sent = None
 
         while not self._stop:
@@ -140,12 +140,12 @@ class RobotInterface:
             last_sent = (x_m, y_m, z_m)
 
     def point_at(self, x_m, y_m, z_m):
-        """Only updates the target. Does NOT block."""
+        # Only updates the target. Does NOT block
         with self._lock:
             self._target = (x_m, y_m, z_m)
 
     def get_current_pose_m(self):
-        """Return current end-effector pose from Dobot as (x,y,z) in meters."""
+        # Return current end-effector pose from Dobot as (x,y,z) in meters.
         pose = self.device.pose()  # (x_mm, y_mm, z_mm, r, j1, j2, j3, j4)
         x_mm, y_mm, z_mm = pose[0], pose[1], pose[2]
         return np.array([x_mm, y_mm, z_mm], dtype=float) / 1000.0
@@ -270,14 +270,19 @@ def create_pipeline():
     cam_rgb.preview.link(yolo.input)
 
     # Output Streams
+    # - - - - - - - - - - -
+    
+    # RGB
     xout_rgb = pipeline.createXLinkOut()
     xout_rgb.setStreamName("rgb")
     cam_rgb.preview.link(xout_rgb.input)
 
+    # Detections
     xout_det = pipeline.createXLinkOut()
     xout_det.setStreamName("detections")
     yolo.out.link(xout_det.input)
 
+    # Depth
     xout_depth = pipeline.createXLinkOut()
     xout_depth.setStreamName("depth")
     stereo.depth.link(xout_depth.input)
