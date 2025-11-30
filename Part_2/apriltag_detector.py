@@ -7,17 +7,19 @@ import time
 from pupil_apriltags import Detector
 
 # -------------------------------------------------------
-# Camera intrinsics for 416x416 (approx for OAK-D Wide)
+# Camera intrinsics for 416x416 resolution
 # -------------------------------------------------------
+# focal lengths
 FX = 450.0
 FY = 450.0
+# center coords
 CX = 208.0
 CY = 208.0
 
-# Tag size in METERS
+# Tag size in meters
 TAG_SIZE_M = 0.038
 
-# Highlight these tag IDs (but we still show all)
+# Highlight these tag IDs (but still show all)
 INTEREST_TAG_IDS = {0, 1, 2, 3}
 
 # -------------------------------------------------------
@@ -26,6 +28,7 @@ INTEREST_TAG_IDS = {0, 1, 2, 3}
 def create_pipeline():
     pipeline = dai.Pipeline()
 
+    # RGB Camera
     cam = pipeline.createColorCamera()
     cam.setPreviewSize(416, 416)
     cam.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
@@ -34,6 +37,7 @@ def create_pipeline():
     cam.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
     cam.setFps(30)
 
+    # Send Stream "rgb" to camera
     xout = pipeline.createXLinkOut()
     xout.setStreamName("rgb")
     cam.preview.link(xout.input)
@@ -41,9 +45,11 @@ def create_pipeline():
     return pipeline
 
 # -------------------------------------------------------
-# Convert rotation matrix to roll/pitch/yaw (optional)
+# # Convert rot matrix -> roll/pitch/yaw (for report)
 # -------------------------------------------------------
+# Avoiding SciPy bc it is a large dependency & we want less compute
 def rot_to_euler_rpy(R):
+    # Check for gimbal lock
     sy = np.sqrt(R[0, 0] ** 2 + R[1, 0] ** 2)
     singular = sy < 1e-6
 
@@ -59,7 +65,7 @@ def rot_to_euler_rpy(R):
     return roll, pitch, yaw
 
 # -------------------------------------------------------
-# Styling for Display
+# Styling for Displaying Text
 # -------------------------------------------------------
 def draw_text_box(img, text, pos, font_scale=0.45, text_color=(255,255,255)):
     font = cv2.FONT_HERSHEY_SIMPLEX
@@ -78,6 +84,7 @@ def draw_text_box(img, text, pos, font_scale=0.45, text_color=(255,255,255)):
 # Main
 # -------------------------------------------------------
 def main():
+    # Create Apriltag detector from:
     at_detector = Detector(
         families="tag36h11",
         nthreads=4,
@@ -88,24 +95,29 @@ def main():
         debug=False,
     )
 
+    # DepthAI pipeline
     pipeline = create_pipeline()
 
-    # Make the window resizable (optional, just for nicer viewing)
+    # Resizable window for visualization
     cv2.namedWindow("apriltag_detector", cv2.WINDOW_NORMAL)
     cv2.resizeWindow("apriltag_detector", 800, 800)
 
+    # Load pipeline into OAK Camera
     with dai.Device(pipeline) as device:
         qRgb = device.getOutputQueue("rgb", maxSize=4, blocking=False)
 
-        frame_count = 0
+        # FPS tracking
         t0 = time.time()
+        frame_count = 0
 
         print("[INFO] Starting AprilTag detector. Press 'q' to quit.")
 
+        # --------------------------------
+        # Main Loop
+        # --------------------------------
         while True:
             inRgb = qRgb.get()
-            frame = inRgb.getCvFrame()   # 416x416 BGR image
-
+            frame = inRgb.getCvFrame() # Convert RGB -> OpenCV BGR
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
             detections = at_detector.detect(
@@ -118,7 +130,8 @@ def main():
             frame_count += 1
             now = time.time()
             fps = frame_count / (now - t0)
-
+            
+            # Get height/width of RGB images
             h, w = frame.shape[:2]
 
             used_boxes = []
