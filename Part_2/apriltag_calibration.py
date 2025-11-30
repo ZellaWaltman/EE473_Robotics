@@ -90,7 +90,7 @@ def solve_rigid_transform(P_cam, P_robot):
 
     t = robot_mean - R @ cam_mean
 
-    # Camera Frame -> Robot Frame R & 
+    # Camera Frame -> Robot Frame R & t
     return R, t
 
 # Convert rot matrix -> roll/pitch/yaw (for report)
