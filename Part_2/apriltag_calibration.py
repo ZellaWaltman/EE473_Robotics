@@ -7,27 +7,32 @@ import time
 import yaml
 from pupil_apriltags import Detector
 
-# ---------------- Camera intrinsics (416x416, approx OAK-D Wide) ----------------
+# -------------------------------------------------------
+# Camera intrinsics for 416x416 resolution
+# -------------------------------------------------------
+# focal lengths
 FX = 450.0
 FY = 450.0
+# center coords
 CX = 208.0
 CY = 208.0
 
 # Tag size in meters
 TAG_SIZE_M = 0.038
 
-# Tags we will use for calibration
+# Tags used for calibration
 TAG_IDS = [0, 1, 2, 3]
 
-# How many pose samples we want per tag
+# Pose samples per tag
 SAMPLES_PER_TAG = 30
 
 # File paths
 KNOWN_POSITIONS_YAML = "apriltag_known_positions.yaml"
 OUTPUT_CALIB_YAML = "camera_robot_calibration.yaml"
 
-
-# ---------------- Load known tag positions in robot base frame ----------------
+# -------------------------------------------------------
+# Load known tag positions in robot base frame
+# -------------------------------------------------------
 def load_tag_positions_robot():
     """
     Expects YAML like:
@@ -46,7 +51,7 @@ def load_tag_positions_robot():
     tag_positions = {int(k): np.array(v, dtype=float)
                      for k, v in data["tag_positions"].items()}
 
-    # Optional: override TAG_SIZE_M from file if present
+    # Override TAG_SIZE_M from file if present
     if "tag_size_m" in data:
         global TAG_SIZE_M
         TAG_SIZE_M = float(data["tag_size_m"])
@@ -54,13 +59,14 @@ def load_tag_positions_robot():
 
     return tag_positions
 
-
-# ---------------- Rigid transform solver: P_robot = R * P_cam + t --------------
+# -------------------------------------------------------
+# Rigid transform solver: P_robot = R * P_cam + t
+# -------------------------------------------------------
 def solve_rigid_transform(P_cam, P_robot):
     """
     P_cam:   Nx3 points in camera frame
     P_robot: Nx3 corresponding points in robot base frame
-    Returns: R (3x3), t (3,)
+    Returns: R (3x3), t (3,) Camera Frame -> Robot Frame
     """
     assert P_cam.shape == P_robot.shape
     N = P_cam.shape[0]
@@ -83,14 +89,15 @@ def solve_rigid_transform(P_cam, P_robot):
         R = Vt.T @ U.T
 
     t = robot_mean - R @ cam_mean
+
+    # Camera Frame -> Robot Frame R & 
     return R, t
 
-
-# ---------------- Convert rotation matrix to roll/pitch/yaw -------------------
+# Convert rot matrix -> roll/pitch/yaw (for report)
+# - - - - - - - - - - - - - - - - - - - - - - - - 
+# Avoiding SciPy bc it is a large dependency & we want less compute
 def rot_to_euler_rpy(R):
-    """
-    Returns roll, pitch, yaw (radians) from 3x3 R.
-    """
+    # Check for gimbal lock
     sy = np.sqrt(R[0, 0] ** 2 + R[1, 0] ** 2)
     singular = sy < 1e-6
 
@@ -105,11 +112,13 @@ def rot_to_euler_rpy(R):
 
     return roll, pitch, yaw
 
-
-# ---------------- DepthAI pipeline: 416x416 RGB preview -----------------------
+# -------------------------------------------------------
+# Build DepthAI pipeline: RGB preview = 416x416
+# -------------------------------------------------------
 def create_pipeline():
     pipeline = dai.Pipeline()
 
+    # RGB Camera
     cam = pipeline.createColorCamera()
     cam.setPreviewSize(416, 416)
     cam.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
@@ -117,13 +126,13 @@ def create_pipeline():
     cam.setInterleaved(False)
     cam.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
     cam.setFps(30)
-
+    
+    # Send Stream "rgb" to camera
     xout = pipeline.createXLinkOut()
     xout.setStreamName("rgb")
     cam.preview.link(xout.input)
 
     return pipeline
-
 
 # -------------------------------------------------------
 # Display Text
@@ -140,7 +149,9 @@ def put_text_outline(img, text, org,
     cv2.putText(img, text, org, font, font_scale,
                 color, thickness, cv2.LINE_AA)
 
-# ---------------- Main calibration routine -----------------------------------
+# -------------------------------------------------------
+# Main calibration routine
+# -------------------------------------------------------
 def main():
     tag_positions_robot = load_tag_positions_robot()
 
@@ -149,6 +160,7 @@ def main():
         if tid not in tag_positions_robot:
             raise RuntimeError(f"Tag ID {tid} not found in {KNOWN_POSITIONS_YAML}")
 
+    # Create Apriltag detector from:
     detector = Detector(
         families="tag36h11",
         nthreads=4,
@@ -159,26 +171,33 @@ def main():
         debug=False,
     )
 
+    # DepthAI pipeline
     pipeline = create_pipeline()
 
     # Storage for camera-frame samples
     samples_cam = {tid: [] for tid in TAG_IDS}
 
+    # Resizable window for visualization
     cv2.namedWindow("calibration_collection", cv2.WINDOW_NORMAL)
     cv2.resizeWindow("calibration_collection", 800, 800)
 
+    # Load pipeline into OAK Camera
     with dai.Device(pipeline) as device:
         qRgb = device.getOutputQueue("rgb", maxSize=4, blocking=False)
 
+        # FPS tracking
         t0 = time.time()
         frame_count = 0
 
         print("[INFO] Collecting AprilTag samples for calibration...")
         print(f"       Required samples per tag: {SAMPLES_PER_TAG}")
 
+        # --------------------------------
+        # Main Loop
+        # --------------------------------
         while True:
             inRgb = qRgb.get()
-            frame = inRgb.getCvFrame()
+            frame = inRgb.getCvFrame() # Convert RGB -> OpenCV BGR
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
             detections = detector.detect(
@@ -206,12 +225,12 @@ def main():
                     t_cam = det.pose_t.flatten()  # 3D position in camera frame (meters)
                     samples_cam[tid].append(t_cam)
 
+            # Get height/width of RGB images
             h,w = frame.shape[:2]
             x = w - 150
             y = h - 10
 
-            # Text overlay: sample counts
-            # --- Draw sample counts at the bottom-left ---
+            # Text overlay: sample counts (drawn at the bottom-left)
             line_height = 25
             block_height = len(TAG_IDS) * line_height
 
@@ -229,7 +248,7 @@ def main():
 
             cv2.imshow("calibration_collection", frame)
 
-            # Check if we have enough samples for all tags
+            # Check if there are enough samples for all tags
             if all(len(samples_cam[tid]) >= SAMPLES_PER_TAG for tid in TAG_IDS):
                 print("[INFO] Collected enough samples for all tags.")
                 break
@@ -241,8 +260,11 @@ def main():
                 return
 
         cv2.destroyAllWindows()
-
-    # ----------------- Compute calibration from collected samples -------------
+        
+    # -------------------------------------------------------
+    # Compute calibration from collected samples
+    # -------------------------------------------------------
+    
     print("[INFO] Computing calibration...")
 
     P_cam_list = []
@@ -284,8 +306,10 @@ def main():
     # Euler angles
     roll, pitch, yaw = rot_to_euler_rpy(R)
     roll_deg, pitch_deg, yaw_deg = np.degrees([roll, pitch, yaw])
-
-    # ----------------- Save calibration to YAML ------------------------------
+    
+    # -------------------------------------------------------
+    # Save calibration to YAML
+    # -------------------------------------------------------
     calib_data = {
         "rotation_matrix": R.tolist(),
         "translation_m": t.tolist(),
