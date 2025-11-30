@@ -319,7 +319,7 @@ def compute_errors(T_camera_base, T_base_ee_list, T_camera_tag_list, T_ee_tag):
     ang_mean = float(ang_errors_deg.mean())
     ang_std  = float(ang_errors_deg.std())
 
-    # 3σ outlier detection (you can also OR position/orientation if you want stricter criteria)
+    # 3σ outlier detection
     outlier_mask = (pos_errors_mm > pos_mean + 3.0 * pos_std) | \
                    (ang_errors_deg > ang_mean + 3.0 * ang_std)
     outlier_indices = np.where(outlier_mask)[0].tolist()
