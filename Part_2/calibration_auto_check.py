@@ -8,14 +8,16 @@ import yaml
 from pupil_apriltags import Detector
 
 # -------------------------------------------------------
-# Camera intrinsics for 416x416 (approx for OAK-D Wide)
+# Camera intrinsics for 416x416 resolution
 # -------------------------------------------------------
+# focal lengths
 FX = 450.0
 FY = 450.0
+# center coords
 CX = 208.0
 CY = 208.0
 
-# Tag size in meters (should match your other scripts)
+# Tag size in meters
 TAG_SIZE_M = 0.038
 
 # File paths
@@ -23,7 +25,7 @@ KNOWN_POSITIONS_YAML = "apriltag_known_positions.yaml"
 CALIB_YAML = "camera_robot_calibration.yaml"
 
 # -------------------------------------------------------
-# Load known tag positions (robot frame)
+# Load known tag positions in robot base frame
 # -------------------------------------------------------
 def load_tag_positions_robot():
     with open(KNOWN_POSITIONS_YAML, "r") as f:
@@ -33,7 +35,7 @@ def load_tag_positions_robot():
         for k, v in data["tag_positions"].items()
     }
 
-    # Optional: sync tag size from file
+    # Override TAG_SIZE_M from file if present
     if "tag_size_m" in data:
         global TAG_SIZE_M
         TAG_SIZE_M = float(data["tag_size_m"])
@@ -42,7 +44,7 @@ def load_tag_positions_robot():
     return tag_positions
 
 # -------------------------------------------------------
-# Load calibration (R, t) camera → robot
+# Load calibration (R, t) Camera Frame -> Robot Frame
 # -------------------------------------------------------
 def load_calibration():
     with open(CALIB_YAML, "r") as f:
@@ -59,11 +61,12 @@ def load_calibration():
     return R, t, data
 
 # -------------------------------------------------------
-# DepthAI pipeline: 416x416 RGB preview
+# Build DepthAI pipeline: RGB preview = 416x416
 # -------------------------------------------------------
 def create_pipeline():
     pipeline = dai.Pipeline()
 
+    # RGB Camera
     cam = pipeline.createColorCamera()
     cam.setPreviewSize(416, 416)
     cam.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
@@ -72,6 +75,7 @@ def create_pipeline():
     cam.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
     cam.setFps(30)
 
+    # Send Stream "rgb" to camera
     xout = pipeline.createXLinkOut()
     xout.setStreamName("rgb")
     cam.preview.link(xout.input)
@@ -111,6 +115,7 @@ def main():
     tag_positions_robot = load_tag_positions_robot()
     R, t, calib_meta = load_calibration()
 
+    # Create Apriltag detector from:
     detector = Detector(
         families="tag36h11",
         nthreads=4,
@@ -121,22 +126,29 @@ def main():
         debug=False,
     )
 
+    # DepthAI pipeline
     pipeline = create_pipeline()
 
+    # Resizable window for visualization
     cv2.namedWindow("calibration_auto_check", cv2.WINDOW_NORMAL)
     cv2.resizeWindow("calibration_auto_check", 800, 800)
 
+    # Load pipeline into OAK Camera
     with dai.Device(pipeline) as device:
         qRgb = device.getOutputQueue("rgb", maxSize=4, blocking=False)
 
-        frame_count = 0
+        # FPS tracking
         t0 = time.time()
+        frame_count = 0
 
         print("[INFO] Starting calibration auto-check. Press 'q' to quit.")
 
+        # --------------------------------
+        # Main Loop
+        # --------------------------------
         while True:
             inRgb = qRgb.get()
-            frame = inRgb.getCvFrame()
+            frame = inRgb.getCvFrame() # Convert RGB -> OpenCV BGR
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
             detections = detector.detect(
@@ -151,6 +163,7 @@ def main():
 
             per_frame_errors = []
 
+            # Draw detections
             for det in detections:
                 tid = int(det.tag_id)
                 corners = det.corners.astype(int)
@@ -195,7 +208,11 @@ def main():
                 mean_err = float('nan')
                 max_err = float('nan')
 
-            # --- Show stats at bottom-right with outlined text ---
+            # - - - - - - - - - - - - - - - - - - - - - - - - -
+            # Show stats at bottom-right w/ outlined text
+            # - - - - - - - - - - - - - - - - - - - - - - - - -
+            
+            # Get height/width of RGB images
             h, w = frame.shape[:2]
             
             lines = [
