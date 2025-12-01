@@ -73,7 +73,7 @@ def rot_to_euler_rpy(R):
         roll = math.atan2(R[2, 1], R[2, 2])
         pitch = math.atan2(-R[2, 0], sy)
         yaw = math.atan2(R[1, 0], R[0, 0])
-    else:
+    else: # Gimbal lock case
         roll = math.atan2(-R[1, 2], R[1, 1])
         pitch = math.atan2(-R[2, 0], sy)
         yaw = 0.0
@@ -98,6 +98,7 @@ def put_text_outline(img, text, org,
 # -------------------------------------------------------
 # Project 3D camera-frame point -> image pixel
 # -------------------------------------------------------
+# Pinhole Camera Projection
 def project_point_cam_to_img(P_cam):
     X, Y, Z = P_cam
     if Z <= 0:
@@ -113,15 +114,16 @@ def load_handeye_from_yaml():
     with open(HANDEYE_OUTPUT_YAML, "r") as f:
         data = yaml.safe_load(f)
 
+    # Read rotation matrix & translation vector for T_ee_tag (end-effector -> tag)
     R = np.array(data["T_ee_tag"]["rotation_matrix"], dtype=float)
     t = np.array(data["T_ee_tag"]["translation_m"], dtype=float)
-    T_ee_tag = make_T(R, t)
+    T_ee_tag = make_T(R, t) # Build 4x4 transform matrix
     errors = data.get("errors", None)
 
     print("[INFO] Loaded existing T_ee_tag from YAML.")
     print("R_ee_tag =\n", R)
     print("t_ee_tag (m) =", t)
-    if errors is not None:
+    if errors is not None: # Print any calibration errors
         print("Prev. Position error (mm): mean={:.2f}, max={:.2f}, std={:.2f}".format(
             errors["pos_mean_mm"], errors["pos_max_mm"], errors["pos_std_mm"]
         ))
@@ -165,6 +167,7 @@ def load_camera_robot_calibration():
 # Robot Interface (Dobot Magician) - Read Pose
 # -------------------------------------------------------
 class RobotInterface:
+    # Connect to the Dobot
     def __init__(self):
         # Auto-select Dobot serial port
         ports = [p.device for p in list_ports.comports()
@@ -202,6 +205,7 @@ class RobotInterface:
             [0.0, 0.0, 1.0]
         ], dtype=float)
 
+        # Wrap rotation & translation -> T_base_ee (base -> EE)
         T_base_ee = make_T(R_be, t_be)
         return T_base_ee
 
@@ -249,11 +253,12 @@ def create_apriltag_detector():
 # Each sample i: T_e_t_i
 # T_list: list of 4x4 transforms (end-effector -> tag)
 
+# Check for at least one transform
 def average_transform(T_list):
     if len(T_list) == 0:
         raise ValueError("No transforms to average")
 
-    # Stack Rs and ts
+    # Splits each transform into rotation & translation
     Rs = [T[:3, :3] for T in T_list]
     ts = [T[:3, 3] for T in T_list]
 
@@ -271,7 +276,7 @@ def average_transform(T_list):
     # Average translation
     t_avg = np.mean(ts, axis=0)
   
-    # Return averaged T (rotation via SVD on sum of R_i, translation via mean)
+    # Return averaged 4x4 transform matrix
     return make_T(R_avg, t_avg)
 
 # -------------------------------------------------------
@@ -284,10 +289,14 @@ def average_transform(T_list):
 # Predicted tag pose = T_c_t_pred[i] = T_c_e[i] * T_ee_tag
 # compute position & orientation error
 
+# Prepare lists to store position & orientation errors for each sample
 def compute_errors(T_camera_base, T_base_ee_list, T_camera_tag_list, T_ee_tag):
     pos_errors_mm = []
     ang_errors_deg = []
 
+    # For each sample, get camera -> end-effector
+    # from base -> end-effector & camera -> base
+    # - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
     for T_b_e, T_c_t_meas in zip(T_base_ee_list, T_camera_tag_list):
         # Camera -> EE from FK chain
         T_c_e = T_camera_base @ T_b_e
@@ -295,6 +304,9 @@ def compute_errors(T_camera_base, T_base_ee_list, T_camera_tag_list, T_ee_tag):
         # Predicted tag pose in camera frame
         T_c_t_pred = T_c_e @ T_ee_tag
 
+        # Compare measured tag translation w/ predicted translation
+        # Get Euclidian Distance Error
+        # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
         # Extract translations
         t_meas = T_c_t_meas[:3, 3]
         t_pred = T_c_t_pred[:3, 3]
@@ -303,14 +315,16 @@ def compute_errors(T_camera_base, T_base_ee_list, T_camera_tag_list, T_ee_tag):
         e_pos = np.linalg.norm(t_meas - t_pred) * 1000.0
         pos_errors_mm.append(e_pos)
 
-        # Orientation error
+        # Orientation error: get relative rotation R_err from predicted -> measured
         R_meas = T_c_t_meas[:3, :3]
         R_pred = T_c_t_pred[:3, :3]
         R_err = R_pred.T @ R_meas
         angle_rad = math.acos(max(-1.0, min(1.0, (np.trace(R_err) - 1.0) / 2.0)))
-        angle_deg = math.degrees(angle_rad)
-        ang_errors_deg.append(angle_deg)
+        angle_deg = math.degrees(angle_rad) # Convert to degrees
+        ang_errors_deg.append(angle_deg) # Store relative rotation
 
+    # Convert lists to arrays & computes mean $ std
+    # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     pos_errors_mm = np.array(pos_errors_mm)
     ang_errors_deg = np.array(ang_errors_deg)
 
@@ -319,12 +333,13 @@ def compute_errors(T_camera_base, T_base_ee_list, T_camera_tag_list, T_ee_tag):
     ang_mean = float(ang_errors_deg.mean())
     ang_std  = float(ang_errors_deg.std())
 
-    # 3σ outlier detection
+    # 3-std outlier detection
     outlier_mask = (pos_errors_mm > pos_mean + 3.0 * pos_std) | \
                    (ang_errors_deg > ang_mean + 3.0 * ang_std)
     outlier_indices = np.where(outlier_mask)[0].tolist()
     outlier_rate = float(outlier_mask.mean()) if len(outlier_mask) > 0 else 0.0
 
+    # return error statistics
     stats = {
         "pos_mean_mm": pos_mean,
         "pos_max_mm":  float(pos_errors_mm.max()),
@@ -348,13 +363,13 @@ def log_SO3(R):
     Log map from SO(3) -> so(3) (axis-angle as 3-vector).
     Returns a 3D vector omega such that exp(omega^) = R.
     """
-    trace = np.trace(R)
+    trace = np.trace(R) # Compute theta of rot matrix using trace relationship
     cos_theta = (trace - 1.0) / 2.0
     cos_theta = max(-1.0, min(1.0, cos_theta))  # clamp for numerical safety
     theta = math.acos(cos_theta)
 
     if abs(theta) < 1e-8:
-        # Very small rotation -> approx zero
+        # If theta almost 0, return 0 vector (no rotation)
         return np.zeros(3, dtype=float)
 
     # Skew-symmetric part
@@ -363,20 +378,19 @@ def log_SO3(R):
     wz = R[1, 0] - R[0, 1]
     axis = np.array([wx, wy, wz], dtype=float) / (2.0 * math.sin(theta))
 
-    # Axis-angle vector: theta * axis
+    # Axis-angle vector (log map): omega = theta * axis
     return theta * axis
 
-
+# Park–Martin hand–eye calibration
 def solve_handeye_AX_XB(T_base_ee_list, T_camera_tag_list):
     """
     AX = X B solver (Park–Martin style) to estimate X = T_ee_tag.
 
-    We follow the assignment's definitions:
-
+    Definitions:
         A_i = T_base_ee[i]^{-1} * T_base_ee[i+1]
         B_i = T_camera_tag[i] * T_camera_tag[i+1]^{-1]
 
-    and solve A_i * X = X * B_i for X (4x4 homogeneous).
+    Solve A_i * X = X * B_i for X (4x4 homogeneous).
     """
     n = len(T_base_ee_list)
     if n < 2:
@@ -401,6 +415,8 @@ def solve_handeye_AX_XB(T_base_ee_list, T_camera_tag_list):
     # ------------------------------------------------------------------
     # 1) Solve rotation part R_X using Park–Martin method
     # ------------------------------------------------------------------
+    # Take log map of each relative rotation to get vector representations
+    
     a_vecs = []
     b_vecs = []
     for A, B in zip(A_list, B_list):
@@ -424,10 +440,10 @@ def solve_handeye_AX_XB(T_base_ee_list, T_camera_tag_list):
     # ------------------------------------------------------------------
     # 2) Solve translation part t_X from:
     #    A_i X = X B_i
-    #
-    #    => R_Ai t_X + t_Ai = R_X t_Bi + t_X
-    #    => (R_Ai - I) t_X = R_X t_Bi - t_Ai
+    #    -> R_Ai t_X + t_Ai = R_X t_Bi + t_X
+    #    -> (R_Ai - I) t_X = R_X t_Bi - t_Ai
     # ------------------------------------------------------------------
+    
     C_rows = []
     d_rows = []
     I = np.eye(3, dtype=float)
@@ -476,6 +492,7 @@ def main():
     use_existing = False
     T_ee_tag = None
 
+    # Calibration file exists -> ask user whether to load or re-calibrate
     if os.path.exists(HANDEYE_OUTPUT_YAML):
         ans = input(
             f"[INFO] Found existing hand-eye file '{HANDEYE_OUTPUT_YAML}'. "
@@ -495,9 +512,9 @@ def main():
         # maxSize=4, blocking=False avoids app stalling if one stream lags; old frames drop instead
         qRgb = device.getOutputQueue("rgb", maxSize=4, blocking=False)
 
-        # ---------------------------------------------
-        # Phases 1–3: only if NOT using existing file
-        # ---------------------------------------------
+        # --------------------------------------------------------------------
+        # Phases 1–3: CALIBRATION. Only if NOT using existing file.
+        # --------------------------------------------------------------------
         if not use_existing:
             cv2.namedWindow("handeye_collection", cv2.WINDOW_NORMAL)
             cv2.resizeWindow("handeye_collection", 900, 600)
