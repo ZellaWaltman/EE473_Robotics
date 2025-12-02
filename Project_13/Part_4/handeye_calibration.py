@@ -399,17 +399,22 @@ def solve_handeye_AX_XB(T_base_ee_list, T_camera_tag_list):
     # ------------------------------------------------------------------
     # Build relative motions A_i, B_i
     # ------------------------------------------------------------------
+    # X = Transform from ee -> tag
+    # A_i = motion of ee between poses i & i+1, expressed in robot frame
+    # B_i = motion of tag between poses i & i+1, expressed in camera frame
+    
     A_list = []
     B_list = []
+    
     for i in range(n - 1):
         T_b_e_i = T_base_ee_list[i]
         T_b_e_j = T_base_ee_list[i + 1]
-        A = invert_T(T_b_e_i) @ T_b_e_j   # base frame EE motion
+        A = invert_T(T_b_e_i) @ T_b_e_j  # robot frame EE motion
         A_list.append(A)
 
         T_c_t_i = T_camera_tag_list[i]
         T_c_t_j = T_camera_tag_list[i + 1]
-        B = invert_T(T_c_t_i) @ T_c_t_j   # camera frame tag motion
+        B = invert_T(T_c_t_i) @ T_c_t_j  # camera frame tag motion
         B_list.append(B)
 
     # ------------------------------------------------------------------
@@ -417,22 +422,24 @@ def solve_handeye_AX_XB(T_base_ee_list, T_camera_tag_list):
     # ------------------------------------------------------------------
     # Take log map of each relative rotation to get vector representations
     
-    a_vecs = []
-    b_vecs = []
+    a_vecs = [] # rotation of EE motion i, expressed as vector
+    b_vecs = [] # rotation of tag motion i, expressed as a vector
+    
     for A, B in zip(A_list, B_list):
         R_A = A[:3, :3]
         R_B = B[:3, :3]
         a_vecs.append(log_SO3(R_A))
         b_vecs.append(log_SO3(R_B))
 
-    # We want R_X such that a_i ≈ R_X * b_i  (least-squares Wahba problem)
-    M = np.zeros((3, 3), dtype=float)
+    # Want R_X such that a_i ≈ R_X * b_i  (least-squares Wahba problem)
+    M = np.zeros((3, 3), dtype=float) # Wahba matrix
     for a, b in zip(a_vecs, b_vecs):
         M += np.outer(a, b)
 
+    # Get average (best rotation) using Singular Value Decomposition
     U, S, Vt = np.linalg.svd(M)
-    R_X = U @ Vt
-    if np.linalg.det(R_X) < 0:
+    R_X = U @ Vt # Gets rid of noise, pure rotation only
+    if np.linalg.det(R_X) < 0: # If Rx < 0, its a reflection
         # Fix possible reflection
         Vt[-1, :] *= -1.0
         R_X = U @ Vt
@@ -457,10 +464,10 @@ def solve_handeye_AX_XB(T_base_ee_list, T_camera_tag_list):
         C_rows.append(R_A - I)
         d_rows.append(R_X @ t_B - t_A)
 
-    C = np.vstack(C_rows)           # shape (3 * (n-1), 3)
-    d = np.vstack(d_rows).reshape(-1)  # shape (3 * (n-1),)
+    C = np.vstack(C_rows) # rotation matrices from ee motions. (3(n−1) * 3)
+    d = np.vstack(d_rows).reshape(-1) # Translations from ee and tag motions. Vector (3(n-1)*1)
 
-    # Least-squares solve for t_X
+    # Least-squares solve for t_X (translation from EE -> tag)
     t_X, *_ = np.linalg.lstsq(C, d, rcond=None)
     t_X = t_X.reshape(3)
 
@@ -634,7 +641,7 @@ def main():
             print("       A_i = T_base_ee[i]^{-1} * T_base_ee[i+1]")
             print("       B_i = T_camera_tag[i] * T_camera_tag[i+1]^{-1]")
 
-            # Use our AX = X B solver to estimate T_ee_tag directly
+            # Use AX = XB solver to estimate T_ee_tag directly
             T_ee_tag = solve_handeye_AX_XB(T_base_ee_list, T_camera_tag_list)
             R_ee_tag = T_ee_tag[:3, :3]
             t_ee_tag = T_ee_tag[:3, 3]
@@ -643,7 +650,7 @@ def main():
             print("R_ee_tag =\n", R_ee_tag)
             print("t_ee_tag (m) =", t_ee_tag)
 
-            # Euler angles of tag frame w.r.t EE frame (for report)
+            # Euler angles of tag frame wrt EE frame (for report)
             roll, pitch, yaw = rot_to_euler_rpy(R_ee_tag)
             roll_deg, pitch_deg, yaw_deg = np.degrees([roll, pitch, yaw])
             print(
@@ -652,9 +659,9 @@ def main():
             )
 
             # -------------------------------------------------------
-            # Phase 3: Error analysis (using T_ee_tag from AX = X B)
+            # Phase 3: Error analysis (using T_ee_tag from AX = XB)
             # -------------------------------------------------------
-            print("[INFO] Computing reprojection errors with AX = X B solution...")
+            print("[INFO] Computing reprojection errors with AX = XB solution...")
             stats = compute_errors(
                 T_camera_base,
                 T_base_ee_list,
@@ -818,11 +825,11 @@ def main():
                     for p in ee_trail:
                         cv2.circle(frame, p, 2, (0, 255, 255), -1)
 
-                # --- 6-DOF pose (vision) ---
+                # --- 4-DOF pose (vision) ---
                 roll_v, pitch_v, yaw_v = rot_to_euler_rpy(R_vis)
                 rpy_vis_deg = np.degrees([roll_v, pitch_v, yaw_v])
 
-                # --- 6-DOF pose (FK) ---
+                # --- 4-DOF pose (FK) ---
                 roll_fk, pitch_fk, yaw_fk = rot_to_euler_rpy(R_fk)
                 rpy_fk_deg = np.degrees([roll_fk, pitch_fk, yaw_fk])
 
