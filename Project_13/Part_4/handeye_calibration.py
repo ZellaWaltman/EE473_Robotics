@@ -627,170 +627,73 @@ def main():
                 return
 
             # ----------------------------------------------------------------
-            # Phase 2: Solve for hand-eye using OpenCV AX = XB
+            # Phase 2: Solve hand-eye using AX = X B (Park–Martin)
             # ----------------------------------------------------------------
-            print("[INFO] Computing hand-eye transform using OpenCV calibrateHandEye (AX = XB, PARK)...")
-    
-            # --- Build inputs for OpenCV calibrateHandEye ---
-            # OpenCV expects:
-            #   R_gripper2base[i], t_gripper2base[i]: transform from gripper (EE) -> base
-            #   R_target2cam[i],   t_target2cam[i]:   transform from target (tag)  -> camera
-            #
-            # We currently have:
-            #   T_base_ee_list[i]   = base -> ee
-            #   T_camera_tag_list[i]= camera -> tag
-            # So we invert each to get what OpenCV wants.
-            R_gripper2base = []
-            t_gripper2base = []
-            R_target2cam   = []
-            t_target2cam   = []
-    
-            for T_b_e, T_c_t in zip(T_base_ee_list, T_camera_tag_list):
-                # gripper (ee) -> base
-                T_e_b = invert_T(T_b_e)
-                R_g2b = T_e_b[:3, :3]
-                t_g2b = T_e_b[:3, 3]
-    
-                # target (tag) -> camera
-                T_t_c = invert_T(T_c_t)
-                R_t2c = T_t_c[:3, :3]
-                t_t2c = T_t_c[:3, 3]
-    
-                R_gripper2base.append(R_g2b)
-                t_gripper2base.append(t_g2b.reshape(3, 1))
-                R_target2cam.append(R_t2c)
-                t_target2cam.append(t_t2c.reshape(3, 1))
-    
-            # Call OpenCV hand-eye calibration
-            # Method = PARK (Park–Martin) as recommended
-            R_cam2gripper, t_cam2gripper = cv2.calibrateHandEye(
-                R_gripper2base, t_gripper2base,
-                R_target2cam,   t_target2cam,
-                method=cv2.CALIB_HAND_EYE_PARK
-            )
-    
-            # This gives the transform from camera -> gripper (EE)
-            T_cam_ee_cv = make_T(R_cam2gripper, t_cam2gripper.flatten())
-            print("[INFO] OpenCV hand-eye result (camera -> EE):")
-            print("R_cam2gripper =\n", R_cam2gripper)
-            print("t_cam2gripper (m) =", t_cam2gripper.flatten())
-    
-            # -------------------------------------------------------
-            # Now compute T_ee_tag the same way as before
-            # (per-sample T_e_t + averaging + outlier filtering)
-            # so your existing downstream code still works.
-            # -------------------------------------------------------
-            print("[INFO] Computing T_ee_tag via per-sample estimation + averaging...")
-    
-            T_ee_tag_samples = []
-            for T_b_e, T_c_t in zip(T_base_ee_list, T_camera_tag_list):
-                # Camera -> EE from FK chain
-                T_c_e = T_camera_base @ T_b_e
-    
-                # From T_c_t = T_c_e * T_e_t  =>  T_e_t = T_c_e^{-1} * T_c_t
-                T_e_t_i = invert_T(T_c_e) @ T_c_t
-                T_ee_tag_samples.append(T_e_t_i)
-    
-            # Average over all samples (SVD on rotations + mean of translations)
-            T_ee_tag_initial = average_transform(T_ee_tag_samples)
-    
-            # Compute residuals for outlier detection
-            errors_mm = []
-            for T_e_t_i in T_ee_tag_samples:
-                T_diff = invert_T(T_ee_tag_initial) @ T_e_t_i
-                t_diff = T_diff[:3, 3]
-                e_mm = np.linalg.norm(t_diff) * 1000.0
-                errors_mm.append(e_mm)
-    
-            errors_mm = np.array(errors_mm)
-            mean_e = errors_mm.mean()
-            std_e  = errors_mm.std()
-    
-            print(f"[DEBUG] Initial per-sample residuals (mm): {errors_mm}")
-            print(f"[DEBUG] Mean={mean_e:.2f} mm  Std={std_e:.2f} mm")
-    
-            # Filter out outliers (2σ)
-            filtered_samples = [
-                T for T, e in zip(T_ee_tag_samples, errors_mm)
-                if e <= mean_e + 2 * std_e
-            ]
-    
-            print(f"[INFO] Keeping {len(filtered_samples)} / {len(T_ee_tag_samples)} samples after filtering.")
-    
-            # Final averaged transform (more robust) -> T_ee_tag
-            T_ee_tag = average_transform(filtered_samples)
-    
+            print("[INFO] Solving hand-eye calibration A_i X = X B_i (Park–Martin)...")
+            print("       X is T_ee_tag (end-effector -> tag).")
+            print("       A_i = T_base_ee[i]^{-1} * T_base_ee[i+1]")
+            print("       B_i = T_camera_tag[i] * T_camera_tag[i+1]^{-1]")
+
+            # Use our AX = X B solver to estimate T_ee_tag directly
+            T_ee_tag = solve_handeye_AX_XB(T_base_ee_list, T_camera_tag_list)
             R_ee_tag = T_ee_tag[:3, :3]
             t_ee_tag = T_ee_tag[:3, 3]
-    
-            print("[INFO] Estimated T_ee_tag (end-effector -> tag) from averaging:")
+
+            print("[INFO] Estimated T_ee_tag (end-effector -> tag) from AX = X B:")
             print("R_ee_tag =\n", R_ee_tag)
             print("t_ee_tag (m) =", t_ee_tag)
-    
-            # Euler angles of tag frame w.r.t EE frame
+
+            # Euler angles of tag frame w.r.t EE frame (for report)
             roll, pitch, yaw = rot_to_euler_rpy(R_ee_tag)
             roll_deg, pitch_deg, yaw_deg = np.degrees([roll, pitch, yaw])
-            print(f"Euler rpy (deg) tag wrt EE: roll={roll_deg:.1f}, pitch={pitch_deg:.1f}, yaw={yaw_deg:.1f}")
+            print(
+                "Euler rpy (deg) tag wrt EE: "
+                f"roll={roll_deg:.1f}, pitch={pitch_deg:.1f}, yaw={yaw_deg:.1f}"
+            )
 
             # -------------------------------------------------------
-            # Phase 3: Error analysis
+            # Phase 3: Error analysis (using T_ee_tag from AX = X B)
             # -------------------------------------------------------
-            print("[INFO] Computing reprojection errors...")
-            stats = compute_errors(T_camera_base, T_base_ee_list, T_camera_tag_list, T_ee_tag)
+            print("[INFO] Computing reprojection errors with AX = X B solution...")
+            stats = compute_errors(
+                T_camera_base,
+                T_base_ee_list,
+                T_camera_tag_list,
+                T_ee_tag
+            )
 
-            print("Position error (mm): mean={:.2f}, max={:.2f}, std={:.2f}".format(
-                stats["pos_mean_mm"], stats["pos_max_mm"], stats["pos_std_mm"]
-            ))
-            print("Orientation error (deg): mean={:.2f}, max={:.2f}, std={:.2f}".format(
-                stats["ang_mean_deg"], stats["ang_max_deg"], stats["ang_std_deg"]
-            ))
+            print(
+                "Position error (mm): mean={:.2f}, max={:.2f}, std={:.2f}".format(
+                    stats["pos_mean_mm"],
+                    stats["pos_max_mm"],
+                    stats["pos_std_mm"]
+                )
+            )
+            print(
+                "Orientation error (deg): mean={:.2f}, max={:.2f}, std={:.2f}".format(
+                    stats["ang_mean_deg"],
+                    stats["ang_max_deg"],
+                    stats["ang_std_deg"]
+                )
+            )
+            print(
+                "Outlier rate: {:.1f}% ({} / {} poses > 3σ)".format(
+                    100.0 * stats["outlier_rate"],
+                    len(stats["outlier_indices"]),
+                    len(stats["pos_per_sample_mm"])
+                )
+            )
 
-            print("Orientation error (deg): mean={:.2f}, max={:.2f}, std={:.2f}".format(
-                stats["ang_mean_deg"], stats["ang_max_deg"], stats["ang_std_deg"]
-            ))
-            print("Outlier rate: {:.1f}% ({} / {} poses > 3σ)".format(
-                100.0 * stats["outlier_rate"],
-                len(stats["outlier_indices"]),
-                len(stats["pos_per_sample_mm"])
-            ))
-            
-            # Simple quality grading
+            # Simple quality grading (optional)
             if stats["pos_mean_mm"] < 10 and stats["ang_mean_deg"] < 5:
                 print("[QUALITY] Excellent calibration.")
             elif stats["pos_mean_mm"] < 15 and stats["ang_mean_deg"] < 10:
                 print("[QUALITY] Good calibration.")
             else:
-                print("[QUALITY] Calibration is mediocre/poor, consider recollecting data.")
-            
-            # Optional: react to high outlier rate
-            if stats["outlier_rate"] > 0.20:
-                print("[WARN] Outlier rate > 20%. This may indicate systematic issues in data or setup.")
-                
-            # Filter out outliers and recompute T_ee_tag from inliers only
-            if stats["outlier_rate"] > 0.20:
-                inlier_idx = [i for i in range(len(T_base_ee_list))
-                              if i not in stats["outlier_indices"]]
-                print(f"[INFO] Recomputing T_ee_tag using {len(inlier_idx)} inlier poses...")
-            
-                T_ee_tag_samples_inliers = []
-                for i in inlier_idx:
-                    T_b_e = T_base_ee_list[i]
-                    T_c_t = T_camera_tag_list[i]
-                    T_c_e = T_camera_base @ T_b_e
-                    T_e_t_i = invert_T(T_c_e) @ T_c_t
-                    T_ee_tag_samples_inliers.append(T_e_t_i)
-            
-                T_ee_tag = average_transform(T_ee_tag_samples_inliers)
-            
-                # Recompute final stats with the refined T_ee_tag
-                stats = compute_errors(T_camera_base, T_base_ee_list, T_camera_tag_list, T_ee_tag)
-                print("[INFO] After inlier-only recompute:")
-                print("Position error (mm): mean={:.2f}, max={:.2f}, std={:.2f}".format(
-                    stats["pos_mean_mm"], stats["pos_max_mm"], stats["pos_std_mm"]
-                ))
-                print("Orientation error (deg): mean={:.2f}, max={:.2f}, std={:.2f}".format(
-                    stats["ang_mean_deg"], stats["ang_max_deg"], stats["ang_std_deg"]
-                ))
+                print(
+                    "[QUALITY] Calibration is mediocre/poor, "
+                    "consider recollecting data."
+                )
 
             # -------------------------------------------------------
             # Save calibration to YAML
@@ -799,7 +702,11 @@ def main():
                 "T_ee_tag": {
                     "rotation_matrix": R_ee_tag.tolist(),
                     "translation_m": t_ee_tag.tolist(),
-                    "euler_rpy_deg": [float(roll_deg), float(pitch_deg), float(yaw_deg)],
+                    "euler_rpy_deg": [
+                        float(roll_deg),
+                        float(pitch_deg),
+                        float(yaw_deg),
+                    ],
                 },
                 "errors": stats,
                 "meta": {
@@ -809,7 +716,10 @@ def main():
                     "camera_params": [FX, FY, CX, CY],
                     "camera_robot_calib_file": CAMERA_ROBOT_CALIB_YAML,
                     "timestamp": time.time(),
-                    "description": "End-effector to AprilTag hand-eye calibration (Dobot + OAK-D).",
+                    "description": (
+                        "End-effector to AprilTag hand-eye calibration "
+                        "(Dobot + OAK-D) using AX = X B (Park–Martin)."
+                    ),
                 },
             }
 
@@ -817,9 +727,7 @@ def main():
                 yaml.dump(calib_data, f)
 
             print(f"[INFO] Hand-eye calibration saved to {HANDEYE_OUTPUT_YAML}")
-        else:
-            print("[INFO] Skipping calibration: using T_ee_tag loaded from file.")
-        
+
         # -------------------------------------------------------
         # Phase 4: Real-time End-Effector tracking
         # -------------------------------------------------------
