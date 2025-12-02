@@ -481,10 +481,11 @@ def main():
                 # Draw bounding box on frame
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
 
+                # Get center of bounding box in pixel coords 
                 cx_rgb = (x1 + x2) // 2
                 cy_rgb = (y1 + y2) // 2
 
-                # Get center of bounding box in pixel coords & draw cross
+                # Draw cross for center
                 cv2.drawMarker(frame, (cx_rgb, cy_rgb),
                                color, markerType=cv2.MARKER_CROSS,
                                markerSize=8, thickness=2)
@@ -502,7 +503,6 @@ def main():
                         best_det = (cx_rgb, cy_rgb, conf)
 
             # Initialize variables for debugging/overlay
-                        # Initialize variables for debugging/overlay
             P_robot_target = None
             depth_str = "N/A"
 
@@ -530,6 +530,7 @@ def main():
 
                 if valid_3d:
                     # Pinhole model: camera frame coordinates
+                    # Get camera frame coordinates from center of detection
                     X_cam = (cx_rgb - CX) * depth_m / FX
                     Y_cam = (cy_rgb - CY) * depth_m / FY
                     Z_cam = depth_m
