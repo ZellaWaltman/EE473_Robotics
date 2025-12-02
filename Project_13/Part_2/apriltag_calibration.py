@@ -72,14 +72,16 @@ def solve_rigid_transform(P_cam, P_robot):
     N = P_cam.shape[0]
     assert N >= 3, "Need at least 3 non-collinear points for a stable transform"
 
-    cam_mean = P_cam.mean(axis=0)
-    robot_mean = P_robot.mean(axis=0)
-
-    Pc = P_cam - cam_mean
-    Pr = P_robot - robot_mean
-
+    # Compute centroids - Get rotation w/out transformation
+    cam_mean = P_cam.mean(axis=0) # average of all camera-frame tag points (X, Y, Z seperate)
+    robot_mean = P_robot.mean(axis=0) # average of all robot-frame tag points (X, Y, Z seperate)
+ 
+    Pc = P_cam - cam_mean # camera-frame tag positions centered around mean
+    Pr = P_robot - robot_mean # robot-frame tag positions centered around mean
+    
     H = Pc.T @ Pr  # 3x3
 
+    # SVD for best rotation
     U, S, Vt = np.linalg.svd(H)
     R = Vt.T @ U.T
 
@@ -88,9 +90,10 @@ def solve_rigid_transform(P_cam, P_robot):
         Vt[2, :] *= -1
         R = Vt.T @ U.T
 
+    # Get transform (P_robot = RP_cam + t)
     t = robot_mean - R @ cam_mean
 
-    # Camera Frame -> Robot Frame R & t
+    # Camera Frame -> Robot Base Frame R & t
     return R, t
 
 # Convert rot matrix -> roll/pitch/yaw (for report)
@@ -269,7 +272,7 @@ def main():
 
     P_cam_list = []
     P_robot_list = []
-
+    
     for tid in TAG_IDS:
         samples = np.array(samples_cam[tid])  # (N,3)
         mean_cam = samples.mean(axis=0)       # average position per tag in camera frame
@@ -279,9 +282,11 @@ def main():
 
         print(f"[DEBUG] Tag {tid}: camera mean = {mean_cam}, robot = {tag_positions_robot[tid]}")
 
-    P_cam = np.vstack(P_cam_list)    # shape (N_tags, 3)
-    P_robot = np.vstack(P_robot_list)
+    # For each tag_id: shape (N_tags, 3)
+    P_cam = np.vstack(P_cam_list) # Point in camera frame
+    P_robot = np.vstack(P_robot_list) # Point in robot frame
 
+    # Get R & t for cam -> robot frame
     R, t = solve_rigid_transform(P_cam, P_robot)
    
     P_robot_pred = (R @ P_cam.T).T + t  # transform each P_cam
